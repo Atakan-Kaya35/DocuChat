@@ -1,0 +1,225 @@
+# =============================================================================
+# DocuChat - Docker Compose Configuration
+# =============================================================================
+# All services run on internal network. Only nginx exposes port 80.
+# Copy .env.sample files to .env and configure before running.
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # NGINX - Reverse Proxy (only exposed service)
+  # ---------------------------------------------------------------------------
+  nginx:
+    image: nginx:alpine
+    container_name: docuchat-nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      frontend:
+        condition: service_started
+      backend:
+        condition: service_healthy
+    networks:
+      - docuchat_net
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # FRONTEND - React/Vite Application
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: docuchat-frontend
+    env_file:
+      - ./frontend/.env
+    networks:
+      - docuchat_net
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # BACKEND - Django API Server
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: docuchat-backend
+    env_file:
+      - ./backend/.env
+    volumes:
+      - backend_uploads:/data/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+        # TODO: Change to service_healthy once ollama healthcheck is verified
+    healthcheck:
+      # TODO: Implement /api/health endpoint in backend
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - docuchat_net
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # WORKER - Celery Background Worker (uses same image as backend)
+  # ---------------------------------------------------------------------------
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: docuchat-worker
+    command: ["celery", "-A", "config", "worker", "--loglevel=info"]
+    # Alternative: command: ["./docker/worker-entrypoint.sh"]
+    env_file:
+      - ./backend/.env
+    volumes:
+      - backend_uploads:/data/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    networks:
+      - docuchat_net
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # POSTGRES - Database with pgvector extension
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: docuchat-postgres
+    env_file:
+      - ./infra/.env
+    # Required env vars in .env:
+    #   POSTGRES_USER=docuchat
+    #   POSTGRES_PASSWORD=<secure_password>
+    #   POSTGRES_DB=docuchat
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - docuchat_net
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # REDIS - Message Broker & Cache
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: docuchat-redis
+    # Optional: mount custom config
+    # volumes:
+    #   - ./infra/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    # command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - docuchat_net
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # KEYCLOAK - Identity & Access Management
+  # ---------------------------------------------------------------------------
+  keycloak:
+    image: quay.io/keycloak/keycloak:latest
+    container_name: docuchat-keycloak
+    command: ["start-dev", "--import-realm"]
+    env_file:
+      - ./infra/.env
+    # Required env vars in .env:
+    #   KEYCLOAK_ADMIN=admin
+    #   KEYCLOAK_ADMIN_PASSWORD=<secure_password>
+    #   KC_DB=postgres
+    #   KC_DB_URL=jdbc:postgresql://postgres:5432/keycloak
+    #   KC_DB_USERNAME=<db_user>
+    #   KC_DB_PASSWORD=<db_password>
+    volumes:
+      - ./infra/keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080;echo -e 'GET /health/ready HTTP/1.1\\r\\nhost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3;if timeout 5 grep -q '200 OK' <&3; then exit 0; else exit 1; fi"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - docuchat_net
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # OLLAMA - Local LLM Inference (internal only, no exposed ports)
+  # ---------------------------------------------------------------------------
+  ollama:
+    image: ollama/ollama:latest
+    container_name: docuchat-ollama
+    # No ports exposed - internal access only via docuchat_net
+    # Other services connect via http://ollama:11434
+    volumes:
+      - ollama_data:/root/.ollama
+    # TODO: Verify healthcheck endpoint works with ollama
+    # healthcheck:
+    #   test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 3
+    #   start_period: 30s
+    networks:
+      - docuchat_net
+    restart: unless-stopped
+
+# =============================================================================
+# NETWORKS
+# =============================================================================
+networks:
+  docuchat_net:
+    driver: bridge
+    name: docuchat_net
+
+# =============================================================================
+# VOLUMES
+# =============================================================================
+volumes:
+  # PostgreSQL data persistence
+  postgres_data:
+    name: docuchat_postgres_data
+
+  # Redis data persistence (optional, for AOF/RDB)
+  redis_data:
+    name: docuchat_redis_data
+
+  # Ollama model cache (persists downloaded models)
+  ollama_data:
+    name: docuchat_ollama_data
+
+  # Backend file uploads persistence
+  backend_uploads:
+    name: docuchat_backend_uploads
