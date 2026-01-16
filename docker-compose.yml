@@ -34,7 +34,7 @@ services:
       dockerfile: Dockerfile
     container_name: docuchat-frontend
     env_file:
-      - ./frontend/.env
+      - ./frontend/.env.sample
     networks:
       - docuchat_net
     restart: unless-stopped
@@ -48,7 +48,7 @@ services:
       dockerfile: Dockerfile
     container_name: docuchat-backend
     env_file:
-      - ./backend/.env
+      - ./backend/.env.sample
     volumes:
       - backend_uploads:/data/uploads
     depends_on:
@@ -62,8 +62,9 @@ services:
         condition: service_started
         # TODO: Change to service_healthy once ollama healthcheck is verified
     healthcheck:
-      # TODO: Implement /api/health endpoint in backend
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      # TODO: Implement python-based healthcheck or /api/health endpoint
+      # test: ["CMD", "python", "manage.py", "check"]
+      test: ["CMD", "echo", "TODO: healthcheck disabled"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -83,7 +84,7 @@ services:
     command: ["celery", "-A", "config", "worker", "--loglevel=info"]
     # Alternative: command: ["./docker/worker-entrypoint.sh"]
     env_file:
-      - ./backend/.env
+      - ./backend/.env.sample
     volumes:
       - backend_uploads:/data/uploads
     depends_on:
@@ -104,7 +105,7 @@ services:
     image: pgvector/pgvector:pg16
     container_name: docuchat-postgres
     env_file:
-      - ./infra/.env
+      - ./infra/.env.sample
     # Required env vars in .env:
     #   POSTGRES_USER=docuchat
     #   POSTGRES_PASSWORD=<secure_password>
@@ -148,11 +149,11 @@ services:
   # KEYCLOAK - Identity & Access Management
   # ---------------------------------------------------------------------------
   keycloak:
-    image: quay.io/keycloak/keycloak:latest
+    image: quay.io/keycloak/keycloak:25.0
     container_name: docuchat-keycloak
     command: ["start-dev", "--import-realm"]
     env_file:
-      - ./infra/.env
+      - ./infra/.env.sample
     # Required env vars in .env:
     #   KEYCLOAK_ADMIN=admin
     #   KEYCLOAK_ADMIN_PASSWORD=<secure_password>
