@@ -16,10 +16,19 @@ requests>=2.31
 
 # Database
 psycopg2-binary>=2.9
+pgvector>=0.2.0
+
+# PDF Text Extraction
+PyMuPDF>=1.23.0
 
 # Async / Background Tasks
 celery>=5.3
 redis>=5.0
+
+# WebSocket Support
+channels>=4.0
+channels-redis>=4.1
+daphne>=4.0
 
 # Environment
 python-dotenv>=1.0

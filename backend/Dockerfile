@@ -24,14 +24,17 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy project
 COPY . .
 
-# Create non-root user and uploads directory
-RUN useradd -m -u 1000 appuser && \
-    mkdir -p /data/uploads && \
-    chown -R appuser:appuser /app /data/uploads
+# Make entrypoint executable and create non-root user and data directories
+RUN chmod +x /app/docker/entrypoint.sh && \
+    useradd -m -u 1000 appuser && \
+    mkdir -p /data/uploads /data/extracted && \
+    chown -R appuser:appuser /app /data/uploads /data/extracted
 USER appuser
 
 # Expose port
 EXPOSE 8000
 
-# Run the application
-CMD ["python", "-m", "gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "2"]
+# Use entrypoint to run migrations before starting
+ENTRYPOINT ["/app/docker/entrypoint.sh"]
+# Use daphne for ASGI (WebSocket support)
+CMD ["daphne", "-b", "0.0.0.0", "-p", "8000", "config.asgi:application"]

@@ -23,11 +23,14 @@ ALLOWED_HOSTS = [
 
 # Application definition
 INSTALLED_APPS = [
+    'daphne',  # ASGI server for Channels
     'django.contrib.contenttypes',
     'django.contrib.auth',
+    'channels',
     'rest_framework',
     'apps.authn',
     'apps.docs',
+    'apps.indexing',
 ]
 
 MIDDLEWARE = [
@@ -40,6 +43,7 @@ ROOT_URLCONF = 'config.urls'
 TEMPLATES = []
 
 WSGI_APPLICATION = 'config.wsgi.application'
+ASGI_APPLICATION = 'config.asgi.application'
 
 # Database
 # Using environment variable for database URL
@@ -126,6 +130,18 @@ REDIS_URL = os.getenv('REDIS_URL', 'redis://redis:6379/0')
 CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', REDIS_URL)
 
 # =============================================================================
+# Django Channels (WebSocket Support)
+# =============================================================================
+CHANNEL_LAYERS = {
+    'default': {
+        'BACKEND': 'channels_redis.core.RedisChannelLayer',
+        'CONFIG': {
+            'hosts': [os.getenv('REDIS_URL', 'redis://redis:6379/0')],
+        },
+    },
+}
+
+# =============================================================================
 # Ollama
 # =============================================================================
 OLLAMA_BASE_URL = os.getenv('OLLAMA_BASE_URL', 'http://ollama:11434')
@@ -135,6 +151,9 @@ OLLAMA_BASE_URL = os.getenv('OLLAMA_BASE_URL', 'http://ollama:11434')
 # =============================================================================
 # Root directory for uploaded files
 UPLOAD_ROOT = Path(os.getenv('UPLOAD_ROOT', '/data/uploads'))
+
+# Root directory for extracted text files (sidecar files)
+EXTRACTED_ROOT = Path(os.getenv('EXTRACTED_ROOT', '/data/extracted'))
 
 # Maximum file size in bytes (50MB default)
 MAX_UPLOAD_SIZE = int(os.getenv('MAX_UPLOAD_SIZE', 50 * 1024 * 1024))
