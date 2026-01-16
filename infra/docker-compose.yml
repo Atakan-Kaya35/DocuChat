@@ -127,6 +127,19 @@ services:
     depends_on:
       - keycloak
       - backend
+      - frontend
+    networks:
+      - docuchat_net
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # FRONTEND - React/Vite Application
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    container_name: docuchat-frontend
     networks:
       - docuchat_net
     restart: unless-stopped
