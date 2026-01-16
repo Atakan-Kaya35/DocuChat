@@ -51,6 +51,7 @@ services:
       - ./backend/.env.sample
     volumes:
       - backend_uploads:/data/uploads
+      - backend_extracted:/data/extracted
     depends_on:
       postgres:
         condition: service_healthy
@@ -62,35 +63,31 @@ services:
         condition: service_started
         # TODO: Change to service_healthy once ollama healthcheck is verified
     healthcheck:
-      # TODO: Implement python-based healthcheck or /api/health endpoint
-      # test: ["CMD", "python", "manage.py", "check"]
-      test: ["CMD", "echo", "TODO: healthcheck disabled"]
-      interval: 30s
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health/', timeout=5)"]
+      interval: 10s
       timeout: 10s
-      retries: 3
-      start_period: 40s
+      retries: 10
+      start_period: 60s
     networks:
       - docuchat_net
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
-  # WORKER - Celery Background Worker (uses same image as backend)
+  # WORKER - Background Indexing Worker (uses same image as backend)
   # ---------------------------------------------------------------------------
   worker:
     build:
       context: ./backend
       dockerfile: Dockerfile
     container_name: docuchat-worker
-    command: ["celery", "-A", "config", "worker", "--loglevel=info"]
-    # Alternative: command: ["./docker/worker-entrypoint.sh"]
+    command: ["python", "manage.py", "run_worker"]
     env_file:
       - ./backend/.env.sample
     volumes:
       - backend_uploads:/data/uploads
+      - backend_extracted:/data/extracted
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
+      backend:
         condition: service_healthy
       ollama:
         condition: service_started
@@ -161,16 +158,20 @@ services:
     #   KC_DB_URL=jdbc:postgresql://postgres:5432/keycloak
     #   KC_DB_USERNAME=<db_user>
     #   KC_DB_PASSWORD=<db_password>
+    environment:
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-change_me}
+
     volumes:
       - ./infra/keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
     depends_on:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080;echo -e 'GET /health/ready HTTP/1.1\\r\\nhost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3;if timeout 5 grep -q '200 OK' <&3; then exit 0; else exit 1; fi"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
+      test: ["CMD-SHELL", "timeout 2 bash -c '</dev/tcp/127.0.0.1/8080' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
       start_period: 60s
     networks:
       - docuchat_net
@@ -236,3 +237,7 @@ volumes:
   # Backend file uploads persistence
   backend_uploads:
     name: docuchat_backend_uploads
+
+  # Backend extracted text files persistence
+  backend_extracted:
+    name: docuchat_backend_extracted

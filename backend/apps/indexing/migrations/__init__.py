@@ -1,0 +1,1 @@
+# Indexing app migrations

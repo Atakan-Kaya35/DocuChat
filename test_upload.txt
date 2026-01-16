@@ -1,0 +1,1 @@
+﻿This is a test document for the DocuChat indexing pipeline. It contains sample text that will be processed by the worker. The worker will extract the text, chunk it into smaller pieces, and generate embeddings using Ollama's nomic-embed-text model. These embeddings will be stored in PostgreSQL using pgvector for efficient similarity search.
