@@ -154,6 +154,10 @@ services:
     container_name: docuchat-backend
     env_file:
       - ../backend/.env.sample
+    environment:
+      UPLOAD_ROOT: /data/uploads
+    volumes:
+      - uploads_data:/data/uploads
     depends_on:
       postgres:
         condition: service_healthy
@@ -191,3 +195,6 @@ volumes:
 
   ollama_data:
     name: docuchat_ollama_data
+
+  uploads_data:
+    name: docuchat_uploads_data

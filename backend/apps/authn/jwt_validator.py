@@ -104,11 +104,25 @@ def validate_token(token: str) -> TokenClaims:
         public_key = PyJWK.from_dict(jwk_data).key
         
         # Decode and verify the token
+        # First, get unverified claims to check issuer
+        unverified_claims = jwt.decode(
+            token,
+            options={"verify_signature": False}
+        )
+        token_issuer = unverified_claims.get('iss', '')
+        
+        # Validate issuer against allowed list
+        valid_issuers = getattr(settings, 'KC_VALID_ISSUERS', [settings.KC_ISSUER])
+        if token_issuer not in valid_issuers:
+            logger.warning(f"Invalid issuer: {token_issuer}, expected one of: {valid_issuers}")
+            raise JWTValidationError(f"Invalid token issuer")
+        
+        # Now decode with verification (using the token's issuer)
         claims = jwt.decode(
             token,
             public_key,
             algorithms=['RS256'],
-            issuer=settings.KC_ISSUER,
+            issuer=token_issuer,  # Use the actual issuer from token
             options={
                 'verify_signature': True,
                 'verify_exp': True,

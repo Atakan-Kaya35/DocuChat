@@ -27,6 +27,7 @@ INSTALLED_APPS = [
     'django.contrib.auth',
     'rest_framework',
     'apps.authn',
+    'apps.docs',
 ]
 
 MIDDLEWARE = [
@@ -108,6 +109,13 @@ KC_AUDIENCE = os.getenv('KC_AUDIENCE', 'docuchat-frontend')
 KC_ISSUER = os.getenv('KC_ISSUER', f'{KC_BASE_URL}/realms/{KC_REALM}')
 KC_JWKS_URL = f'{KC_BASE_URL}/realms/{KC_REALM}/protocol/openid-connect/certs'
 
+# External issuer for tokens issued via browser (through nginx proxy)
+# Tokens from the frontend will have this issuer
+KC_EXTERNAL_ISSUER = os.getenv('KC_EXTERNAL_ISSUER', 'http://localhost/realms/docuchat')
+
+# List of valid issuers (internal + external)
+KC_VALID_ISSUERS = [KC_ISSUER, KC_EXTERNAL_ISSUER]
+
 # JWKS cache TTL in seconds (10 minutes default)
 KC_JWKS_CACHE_TTL = int(os.getenv('KC_JWKS_CACHE_TTL', '600'))
 
@@ -121,6 +129,27 @@ CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', REDIS_URL)
 # Ollama
 # =============================================================================
 OLLAMA_BASE_URL = os.getenv('OLLAMA_BASE_URL', 'http://ollama:11434')
+
+# =============================================================================
+# File Upload Configuration
+# =============================================================================
+# Root directory for uploaded files
+UPLOAD_ROOT = Path(os.getenv('UPLOAD_ROOT', '/data/uploads'))
+
+# Maximum file size in bytes (50MB default)
+MAX_UPLOAD_SIZE = int(os.getenv('MAX_UPLOAD_SIZE', 50 * 1024 * 1024))
+
+# Allowed MIME types for upload
+ALLOWED_CONTENT_TYPES = [
+    'application/pdf',
+    'text/plain',
+    'text/markdown',
+    # Some systems use these for markdown
+    'text/x-markdown',
+]
+
+# Allowed file extensions (used as secondary check)
+ALLOWED_EXTENSIONS = ['.pdf', '.txt', '.md', '.markdown']
 
 # =============================================================================
 # Logging
