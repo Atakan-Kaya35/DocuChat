@@ -126,6 +126,34 @@ services:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
       - keycloak
+      - backend
+    networks:
+      - docuchat_net
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # BACKEND - Django API Server
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: docuchat-backend
+    env_file:
+      - ../backend/.env.sample
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      keycloak:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     networks:
       - docuchat_net
     restart: unless-stopped
