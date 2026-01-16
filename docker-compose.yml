@@ -197,6 +197,18 @@ services:
       - docuchat_net
     restart: unless-stopped
 
+  # ---------------------------------------------------------------------------
+  # CURL - Temporary HTTP client (for testing internal connectivity)
+  # ---------------------------------------------------------------------------
+  curl:
+    image: curlimages/curl:latest
+    container_name: docuchat-curl
+    profiles:
+      - tools
+    networks:
+      - docuchat_net
+    entrypoint: ["curl"]
+
 # =============================================================================
 # NETWORKS
 # =============================================================================
