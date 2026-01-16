@@ -2,20 +2,23 @@
 Document upload and management views.
 
 Provides endpoints for:
-- POST /api/docs/upload - Upload a new document
+- POST /api/docs/upload - Upload a new document (idempotent)
 - GET /api/docs - List user's documents
 - GET /api/docs/<id> - Get document details
 """
 import os
+import hashlib
 import logging
 from pathlib import Path
 from django.conf import settings
-from django.db import transaction
+from django.db import transaction, IntegrityError
 from django.http import JsonResponse
 from django.views.decorators.http import require_http_methods
 from django.views.decorators.csrf import csrf_exempt
 
 from apps.authn.middleware import auth_required
+from apps.authn.ratelimit import rate_limited, check_upload_rate_limit
+from apps.authn.audit import audit_document_uploaded, audit_document_duplicate
 from .models import Document, IndexJob, DocumentStatus, IndexJobStatus, IndexJobStage
 from .storage import get_storage, StorageError
 
@@ -61,9 +64,51 @@ def normalize_content_type(content_type: str, filename: str) -> str:
     return content_type
 
 
+def compute_file_hash(uploaded_file) -> str:
+    """
+    Compute SHA-256 hash of uploaded file content.
+    
+    Reads file in chunks to handle large files efficiently.
+    Resets file position after hashing.
+    
+    Returns:
+        Hex string of SHA-256 hash (64 characters)
+    """
+    sha256 = hashlib.sha256()
+    
+    # Read in chunks to handle large files
+    for chunk in uploaded_file.chunks():
+        sha256.update(chunk)
+    
+    # Reset file position so it can be read again for storage
+    uploaded_file.seek(0)
+    
+    return sha256.hexdigest()
+
+
+def get_existing_document(user_id: str, content_hash: str):
+    """
+    Check if a document with the same hash already exists for this user.
+    
+    Returns:
+        (Document, IndexJob|None) tuple if found, (None, None) if not
+    """
+    try:
+        doc = Document.objects.get(
+            owner_user_id=user_id,
+            content_hash=content_hash
+        )
+        # Get latest job for this document
+        latest_job = doc.index_jobs.order_by('-created_at').first()
+        return doc, latest_job
+    except Document.DoesNotExist:
+        return None, None
+
+
 @csrf_exempt
 @require_http_methods(["POST"])
 @auth_required
+@rate_limited(check_upload_rate_limit)
 def upload_document(request):
     """
     Upload a new document.
@@ -133,6 +178,32 @@ def upload_document(request):
             status=400
         )
     
+    # Compute content hash for idempotency check
+    content_hash = compute_file_hash(uploaded_file)
+    logger.debug(f"Content hash for {filename}: {content_hash}")
+    
+    # Check for existing document with same content from same user
+    existing_doc, existing_job = get_existing_document(user_id, content_hash)
+    if existing_doc:
+        logger.info(
+            f"Duplicate upload detected: returning existing document {existing_doc.id} "
+            f"(original filename: {existing_doc.filename}, new filename: {filename})"
+        )
+        # Audit log for duplicate detection
+        audit_document_duplicate(request, str(existing_doc.id), str(existing_doc.id))
+        
+        response_data = {
+            'documentId': str(existing_doc.id),
+            'status': existing_doc.status,
+            'filename': existing_doc.filename,
+            'duplicate': True,
+            'message': 'Document with identical content already exists'
+        }
+        if existing_job:
+            response_data['jobId'] = str(existing_job.id)
+        # Return 200 OK for idempotent re-upload, not 201 Created
+        return JsonResponse(response_data, status=200)
+    
     try:
         with transaction.atomic():
             # Create document record first to get the ID
@@ -141,6 +212,7 @@ def upload_document(request):
                 filename=filename,
                 content_type=content_type,
                 size_bytes=size_bytes,
+                content_hash=content_hash,
                 storage_path='',  # Will update after saving file
                 status=DocumentStatus.UPLOADED
             )
@@ -165,6 +237,15 @@ def upload_document(request):
             
             logger.info(f"Document created: {document.id}, job: {job.id}")
             
+            # Audit log for successful upload
+            audit_document_uploaded(
+                request,
+                document_id=str(document.id),
+                filename=filename,
+                size_bytes=size_bytes,
+                content_hash=content_hash
+            )
+            
             return JsonResponse({
                 'documentId': str(document.id),
                 'jobId': str(job.id),
@@ -176,6 +257,27 @@ def upload_document(request):
         logger.error(f"Storage error during upload: {e}")
         return JsonResponse(
             {'error': 'Failed to store file', 'code': 'STORAGE_ERROR'},
+            status=500
+        )
+    except IntegrityError as e:
+        # Race condition: another request created the same document
+        logger.warning(f"IntegrityError during upload (race condition): {e}")
+        # Try to fetch the existing document
+        existing_doc, existing_job = get_existing_document(user_id, content_hash)
+        if existing_doc:
+            response_data = {
+                'documentId': str(existing_doc.id),
+                'status': existing_doc.status,
+                'filename': existing_doc.filename,
+                'duplicate': True,
+                'message': 'Document with identical content already exists'
+            }
+            if existing_job:
+                response_data['jobId'] = str(existing_job.id)
+            return JsonResponse(response_data, status=200)
+        # If we can't find it, something else went wrong
+        return JsonResponse(
+            {'error': 'Failed to create document', 'code': 'INTEGRITY_ERROR'},
             status=500
         )
     except Exception as e:
@@ -310,4 +412,65 @@ def get_document(request, document_id):
         'createdAt': document.created_at.isoformat(),
         'updatedAt': document.updated_at.isoformat(),
         'jobs': jobs
+    })
+
+
+@csrf_exempt
+@require_http_methods(["GET"])
+@auth_required
+def get_chunk(request, document_id, chunk_index):
+    """
+    Get a specific chunk from a document.
+    
+    GET /api/docs/<document_id>/chunks/<chunk_index>
+    
+    Used for viewing citation sources (clickable citations in UI).
+    
+    Returns:
+        {
+            "docId": "uuid",
+            "chunkId": "uuid",
+            "chunkIndex": 3,
+            "text": "Full chunk text content...",
+            "filename": "document.pdf"
+        }
+    """
+    from apps.indexing.models import DocumentChunk
+    
+    user_id = request.user_claims.sub
+    
+    # Get the document first (for ownership check)
+    try:
+        document = Document.objects.get(id=document_id)
+    except Document.DoesNotExist:
+        return JsonResponse(
+            {'error': 'Document not found', 'code': 'NOT_FOUND'},
+            status=404
+        )
+    
+    # Check ownership
+    if document.owner_user_id != user_id:
+        return JsonResponse(
+            {'error': 'Document not found', 'code': 'NOT_FOUND'},
+            status=404
+        )
+    
+    # Get the chunk
+    try:
+        chunk = DocumentChunk.objects.get(
+            document=document,
+            chunk_index=chunk_index
+        )
+    except DocumentChunk.DoesNotExist:
+        return JsonResponse(
+            {'error': 'Chunk not found', 'code': 'NOT_FOUND'},
+            status=404
+        )
+    
+    return JsonResponse({
+        'docId': str(document.id),
+        'chunkId': str(chunk.id),
+        'chunkIndex': chunk.chunk_index,
+        'text': chunk.text,
+        'filename': document.filename,
     })

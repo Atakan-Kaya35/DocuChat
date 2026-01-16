@@ -31,6 +31,7 @@ INSTALLED_APPS = [
     'apps.authn',
     'apps.docs',
     'apps.indexing',
+    'apps.rag',
 ]
 
 MIDDLEWARE = [
@@ -145,6 +146,8 @@ CHANNEL_LAYERS = {
 # Ollama
 # =============================================================================
 OLLAMA_BASE_URL = os.getenv('OLLAMA_BASE_URL', 'http://ollama:11434')
+OLLAMA_EMBED_MODEL = os.getenv('OLLAMA_EMBED_MODEL', 'nomic-embed-text')
+OLLAMA_CHAT_MODEL = os.getenv('OLLAMA_CHAT_MODEL', 'llama3.2')
 
 # =============================================================================
 # File Upload Configuration
@@ -181,11 +184,18 @@ LOGGING = {
             'format': '{levelname} {asctime} {module} {message}',
             'style': '{',
         },
+        'json': {
+            'format': '%(message)s',  # Audit logs are already JSON
+        },
     },
     'handlers': {
         'console': {
             'class': 'logging.StreamHandler',
             'formatter': 'verbose',
+        },
+        'audit': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'json',
         },
     },
     'root': {
@@ -196,6 +206,16 @@ LOGGING = {
         'apps.authn': {
             'handlers': ['console'],
             'level': 'DEBUG',
+            'propagate': False,
+        },
+        'apps.rag': {
+            'handlers': ['console'],
+            'level': 'DEBUG',
+            'propagate': False,
+        },
+        'audit': {
+            'handlers': ['audit'],
+            'level': 'INFO',
             'propagate': False,
         },
     },

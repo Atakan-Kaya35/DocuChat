@@ -3,6 +3,7 @@ import { Routes, Route } from 'react-router-dom';
 import { useAuth } from 'react-oidc-context';
 import HomePage from './pages/HomePage';
 import CallbackPage from './pages/CallbackPage';
+import ChatPage from './pages/ChatPage';
 
 function App() {
   const auth = useAuth();
@@ -80,6 +81,7 @@ function App() {
     <Routes>
       <Route path="/" element={<HomePage />} />
       <Route path="/callback" element={<CallbackPage />} />
+      <Route path="/chat" element={<ChatPage />} />
     </Routes>
   );
 }

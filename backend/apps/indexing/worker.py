@@ -34,12 +34,27 @@ from apps.indexing.extractor import extract_text, save_extracted_text, Extractio
 from apps.indexing.chunker import chunk_text, TextChunk
 from apps.indexing.embedder import generate_embedding, EmbeddingError, test_ollama_connection
 from apps.indexing.publisher import publish_progress, publish_complete, publish_failed
+from apps.indexing.retry import (
+    retry_with_backoff,
+    EMBEDDING_RETRY_CONFIG,
+    RetryExhausted
+)
+from apps.authn.audit import audit_indexing_started, audit_indexing_completed, audit_indexing_failed
 
 logger = logging.getLogger(__name__)
 
 # Configuration
 POLL_INTERVAL = 2  # seconds between job checks
 MAX_CONSECUTIVE_ERRORS = 5  # Stop if too many errors in a row
+HEARTBEAT_FILE = '/tmp/worker_heartbeat'
+
+
+def touch_heartbeat():
+    """Touch heartbeat file for health checks."""
+    try:
+        Path(HEARTBEAT_FILE).touch()
+    except Exception as e:
+        logger.warning(f"Failed to update heartbeat: {e}")
 
 
 class IndexingWorker:
@@ -212,10 +227,22 @@ class IndexingWorker:
             total_chunks = len(chunks)
             
             for i, chunk in enumerate(chunks):
-                # Generate embedding
+                # Generate embedding with retry
                 try:
-                    embedding = generate_embedding(chunk.text)
+                    embedding = retry_with_backoff(
+                        func=lambda c=chunk: generate_embedding(c.text),
+                        config=EMBEDDING_RETRY_CONFIG,
+                        exceptions=(EmbeddingError,),
+                        on_retry=lambda attempt, err, backoff: logger.warning(
+                            f"Embedding retry {attempt + 1} for chunk {i}: {err}"
+                        )
+                    )
+                except RetryExhausted as e:
+                    raise EmbeddingError(
+                        f"Failed to embed chunk {i} after {e.attempts} attempts: {e.last_exception}"
+                    )
                 except EmbeddingError as e:
+                    # Non-retriable error
                     raise EmbeddingError(f"Failed to embed chunk {i}: {e}")
                 
                 # Store chunk with embedding (upsert logic via unique constraint)

@@ -10,4 +10,5 @@ urlpatterns = [
     path('upload', views.upload_document, name='upload'),
     path('', views.list_documents, name='list'),
     path('<uuid:document_id>', views.get_document, name='detail'),
+    path('<uuid:document_id>/chunks/<int:chunk_index>', views.get_chunk, name='chunk'),
 ]

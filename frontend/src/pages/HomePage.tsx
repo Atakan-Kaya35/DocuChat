@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from 'react-oidc-context';
 import { apiClient, Document, UserInfo } from '../api';
 import { useIndexingSocket, IndexProgressEvent, ConnectionStatus } from '../ws';
@@ -17,6 +18,7 @@ interface UploadProgress {
  */
 export default function HomePage() {
   const auth = useAuth();
+  const navigate = useNavigate();
   const [userInfo, setUserInfo] = useState<UserInfo | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -129,8 +131,8 @@ export default function HomePage() {
       const response = await apiClient.uploadDocument(file);
       console.log('[HomePage] Upload response:', response);
       setUploadProgress({
-        documentId: response.document.id,
-        jobId: response.job_id,
+        documentId: response.documentId,
+        jobId: response.jobId,
         stage: null,
         progress: 0,
         message: 'Processing...',
@@ -159,8 +161,9 @@ export default function HomePage() {
   const getStatusColor = (status: Document['status']) => {
     switch (status) {
       case 'INDEXED': return '#28a745';
-      case 'PROCESSING': return '#ffc107';
-      case 'PENDING': return '#17a2b8';
+      case 'INDEXING': return '#ffc107';
+      case 'QUEUED': return '#17a2b8';
+      case 'UPLOADED': return '#6c757d';
       case 'FAILED': return '#dc3545';
       default: return '#6c757d';
     }
@@ -293,7 +296,7 @@ export default function HomePage() {
               <ul style={styles.documentList}>
                 {documents.map((doc) => (
                   <li key={doc.id} style={styles.documentItem}>
-                    <span style={styles.documentTitle}>{doc.title}</span>
+                    <span style={styles.documentTitle}>{doc.filename}</span>
                     <span
                       style={{
                         ...styles.documentStatus,
@@ -308,12 +311,20 @@ export default function HomePage() {
             )}
           </div>
 
-          <button
-            style={{ ...styles.button, ...styles.logoutButton }}
-            onClick={() => auth.signoutRedirect()}
-          >
-            Logout
-          </button>
+          <div style={styles.actionButtons}>
+            <button
+              style={{ ...styles.button, ...styles.chatButton }}
+              onClick={() => navigate('/chat')}
+            >
+              💬 Chat with Documents
+            </button>
+            <button
+              style={{ ...styles.button, ...styles.logoutButton }}
+              onClick={() => auth.signoutRedirect()}
+            >
+              Logout
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -388,9 +399,17 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     transition: 'background 0.2s',
   },
+  actionButtons: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '0.75rem',
+    marginTop: '1.5rem',
+  },
+  chatButton: {
+    background: '#28a745',
+  },
   logoutButton: {
     background: '#dc3545',
-    marginTop: '1.5rem',
   },
   userSection: {
     marginTop: '1rem',

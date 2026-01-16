@@ -11,7 +11,7 @@ from channels.db import database_sync_to_async
 from channels.middleware import BaseMiddleware
 from django.conf import settings
 
-from apps.authn.jwt import JWTValidator, JWTValidationError
+from apps.authn.jwt_validator import validate_token, JWTValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -65,13 +65,12 @@ class JWTAuthMiddleware(BaseMiddleware):
         Returns user dict on success, None on failure.
         """
         try:
-            validator = JWTValidator()
-            payload = validator.validate(token)
+            claims = validate_token(token)
             
             return {
-                'id': payload.get('sub'),
-                'username': payload.get('preferred_username', 'unknown'),
-                'roles': payload.get('realm_access', {}).get('roles', []),
+                'id': claims.sub,
+                'username': claims.preferred_username,
+                'roles': claims.roles,
             }
         except JWTValidationError as e:
             logger.warning(f"JWT validation failed: {e}")

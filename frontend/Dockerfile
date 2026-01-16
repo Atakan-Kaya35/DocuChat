@@ -18,6 +18,9 @@ RUN npm install
 # Copy source files
 COPY . .
 
+# Copy .env.sample to .env so Vite can read it at build time
+RUN cp .env.sample .env
+
 # Build the app
 RUN npm run build
 

@@ -186,7 +186,8 @@ services:
     # No ports exposed - internal access only via docuchat_net
     # Other services connect via http://ollama:11434
     volumes:
-      - ollama_data:/root/.ollama
+      # Bind mount to local folder - models persist even if volume is deleted
+      - ./infra/ollama/models:/root/.ollama
     # TODO: Verify healthcheck endpoint works with ollama
     # healthcheck:
     #   test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
@@ -230,9 +231,8 @@ volumes:
   redis_data:
     name: docuchat_redis_data
 
-  # Ollama model cache (persists downloaded models)
-  ollama_data:
-    name: docuchat_ollama_data
+  # Ollama models now use bind mount: ./infra/ollama/models
+  # (See ollama service volumes section)
 
   # Backend file uploads persistence
   backend_uploads:

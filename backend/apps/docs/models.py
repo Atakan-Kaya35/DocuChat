@@ -69,6 +69,15 @@ class Document(models.Model):
         help_text="Path to file on disk (relative to upload root)"
     )
     
+    # Content hash for idempotency (SHA-256 hex)
+    content_hash = models.CharField(
+        max_length=64,
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="SHA-256 hash of file content for deduplication"
+    )
+    
     # Processing status
     status = models.CharField(
         max_length=20,
@@ -87,6 +96,13 @@ class Document(models.Model):
         ordering = ['-created_at']
         indexes = [
             models.Index(fields=['owner_user_id', 'created_at']),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['owner_user_id', 'content_hash'],
+                name='unique_user_content_hash',
+                condition=models.Q(content_hash__isnull=False),
+            ),
         ]
 
     def __str__(self):

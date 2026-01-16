@@ -4,5 +4,8 @@ export type {
   ApiError, 
   Document, 
   DocumentUploadResponse, 
-  DocumentListResponse 
+  DocumentListResponse,
+  Citation,
+  AskResponse,
+  ChunkResponse,
 } from './client';

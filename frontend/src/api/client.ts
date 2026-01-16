@@ -18,19 +18,53 @@ export interface UserInfo {
 
 export interface Document {
   id: string;
-  title: string;
-  status: 'PENDING' | 'PROCESSING' | 'INDEXED' | 'FAILED';
-  created_at: string;
-  updated_at: string;
+  filename: string;
+  contentType: string;
+  sizeBytes: number;
+  status: 'UPLOADED' | 'QUEUED' | 'INDEXING' | 'INDEXED' | 'FAILED';
+  createdAt: string;
+  updatedAt: string;
+  latestJob?: {
+    id: string;
+    status: string;
+    stage: string;
+    progress: number;
+    errorMessage?: string;
+  };
 }
 
 export interface DocumentUploadResponse {
-  document: Document;
-  job_id: string;
+  documentId: string;
+  jobId: string;
+  status: string;
+  filename: string;
 }
 
 export interface DocumentListResponse {
   documents: Document[];
+}
+
+export interface Citation {
+  docId: string;
+  chunkId: string;
+  chunkIndex: number;
+  snippet: string;
+  score: number;
+  documentTitle: string;
+}
+
+export interface AskResponse {
+  answer: string;
+  citations: Citation[];
+  model: string;
+}
+
+export interface ChunkResponse {
+  docId: string;
+  chunkId: string;
+  chunkIndex: number;
+  text: string;
+  filename: string;
 }
 
 class ApiClient {
@@ -141,19 +175,45 @@ class ApiClient {
   }
 
   /**
-   * POST /api/documents/upload - Upload a document
+   * POST /api/docs/upload - Upload a document
    */
   async uploadDocument(file: File): Promise<DocumentUploadResponse> {
     const formData = new FormData();
     formData.append('file', file);
-    return this.uploadFile<DocumentUploadResponse>('/documents/upload', formData);
+    return this.uploadFile<DocumentUploadResponse>('/docs/upload', formData);
   }
 
   /**
-   * GET /api/documents - List user's documents
+   * GET /api/docs - List user's documents
    */
   async listDocuments(): Promise<DocumentListResponse> {
-    return this.request<DocumentListResponse>('/documents');
+    return this.request<DocumentListResponse>('/docs');
+  }
+
+  /**
+   * POST /api/rag/ask - Ask a question about documents
+   */
+  async ask(question: string, options?: {
+    topK?: number;
+    temperature?: number;
+    maxTokens?: number;
+  }): Promise<AskResponse> {
+    return this.request<AskResponse>('/rag/ask', {
+      method: 'POST',
+      body: JSON.stringify({
+        question,
+        topK: options?.topK,
+        temperature: options?.temperature,
+        maxTokens: options?.maxTokens,
+      }),
+    });
+  }
+
+  /**
+   * GET /api/docs/:docId/chunks/:chunkIndex - Get a specific chunk
+   */
+  async getChunk(docId: string, chunkIndex: number): Promise<ChunkResponse> {
+    return this.request<ChunkResponse>(`/docs/${docId}/chunks/${chunkIndex}`);
   }
 }
 
