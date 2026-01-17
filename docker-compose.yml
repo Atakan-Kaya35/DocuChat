@@ -194,10 +194,10 @@ services:
       # Bind mount to local folder - models persist even if volume is deleted
       - ./infra/ollama/models:/root/.ollama
     healthcheck:
-      # Ollama image doesn't have curl, use wget or shell redirect
-      test: ["CMD-SHELL", "wget -q --spider http://localhost:11434/api/tags || exit 1"]
+      # Use ollama CLI to verify server is ready
+      test: ["CMD", "ollama", "list"]
       interval: 10s
-      timeout: 5s
+      timeout: 600s
       retries: 5
       start_period: 10s
     networks:

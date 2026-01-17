@@ -6,7 +6,7 @@ Provides the bounded agent endpoint for multi-step question answering.
 import json
 import logging
 
-from django.http import JsonResponse
+from django.http import JsonResponse, StreamingHttpResponse
 from django.views import View
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
@@ -14,7 +14,14 @@ from django.utils.decorators import method_decorator
 from apps.authn.middleware import auth_required
 from apps.authn.ratelimit import rate_limited, check_ask_rate_limit
 from apps.authn.audit import log_audit_from_request, AuditEvent
-from apps.agent.executor import run_agent, AgentError, MAX_QUESTION_LENGTH
+from apps.agent.executor import (
+    run_agent, 
+    run_agent_streaming, 
+    AgentError, 
+    AgentResult,
+    TraceEntry,
+    MAX_QUESTION_LENGTH
+)
 
 logger = logging.getLogger(__name__)
 
@@ -115,3 +122,110 @@ class AgentRunView(View):
                 {"error": "Internal server error", "code": "INTERNAL_ERROR"},
                 status=500
             )
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+@method_decorator(auth_required, name='dispatch')
+@method_decorator(rate_limited(check_ask_rate_limit), name='dispatch')
+class AgentStreamView(View):
+    """
+    POST /api/agent/stream
+    
+    Execute bounded agent loop with Server-Sent Events for real-time updates.
+    
+    Request body:
+        {
+            "question": "What are the key findings?"
+        }
+    
+    Response: SSE stream with events:
+        event: trace
+        data: {"type": "plan", "steps": [...]}
+        
+        event: trace
+        data: {"type": "tool_call", "tool": "search_docs", ...}
+        
+        event: complete
+        data: {"answer": "...", "citations": [...], "trace": [...]}
+    """
+    
+    def post(self, request):
+        try:
+            body = json.loads(request.body)
+        except json.JSONDecodeError:
+            return JsonResponse({"error": "Invalid JSON"}, status=400)
+        
+        question = body.get("question", "")
+        
+        # Validate question
+        if not question or not question.strip():
+            return JsonResponse(
+                {"error": "Question is required", "code": "VALIDATION_ERROR"},
+                status=400
+            )
+        
+        question = question.strip()
+        if len(question) > MAX_QUESTION_LENGTH:
+            return JsonResponse(
+                {
+                    "error": f"Question too long. Maximum {MAX_QUESTION_LENGTH} characters.",
+                    "code": "VALIDATION_ERROR"
+                },
+                status=400
+            )
+        
+        # Get user ID
+        user_id = request.user_claims.sub
+        if not user_id:
+            return JsonResponse({"error": "Invalid token: missing sub"}, status=401)
+        
+        def event_stream():
+            """Generate SSE events from agent execution."""
+            tool_calls_count = 0
+            final_trace = []
+            
+            try:
+                for item in run_agent_streaming(question, user_id):
+                    if isinstance(item, TraceEntry):
+                        # Stream trace entry
+                        final_trace.append(item)
+                        if item.type.value == 'tool_call':
+                            tool_calls_count += 1
+                        
+                        event_data = json.dumps(item.to_dict())
+                        yield f"event: trace\ndata: {event_data}\n\n"
+                        
+                    elif isinstance(item, AgentResult):
+                        # Final result
+                        result_data = item.to_dict(include_trace=True)
+                        
+                        # Audit log
+                        log_audit_from_request(
+                            request,
+                            'agent.stream',
+                            metadata={
+                                'question_length': len(question),
+                                'tool_calls': tool_calls_count,
+                                'trace_length': len(final_trace),
+                            }
+                        )
+                        
+                        event_data = json.dumps(result_data)
+                        yield f"event: complete\ndata: {event_data}\n\n"
+                        
+            except AgentError as e:
+                error_data = json.dumps({"error": str(e), "code": "AGENT_ERROR"})
+                yield f"event: error\ndata: {error_data}\n\n"
+                
+            except Exception as e:
+                logger.exception(f"Streaming agent error: {e}")
+                error_data = json.dumps({"error": "Internal server error", "code": "INTERNAL_ERROR"})
+                yield f"event: error\ndata: {error_data}\n\n"
+        
+        response = StreamingHttpResponse(
+            event_stream(),
+            content_type='text/event-stream'
+        )
+        response['Cache-Control'] = 'no-cache'
+        response['X-Accel-Buffering'] = 'no'  # Disable nginx buffering
+        return response

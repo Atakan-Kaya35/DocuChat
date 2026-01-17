@@ -449,8 +449,11 @@ def call_llm(prompt: str, max_tokens: int = 500) -> str:
     """Call LLM and return response text."""
     ollama_url = getattr(settings, 'OLLAMA_BASE_URL', 'http://ollama:11434')
     chat_model = getattr(settings, 'OLLAMA_CHAT_MODEL', 'llama3.2')
+    chat_timeout = getattr(settings, 'OLLAMA_CHAT_TIMEOUT', 600)  # 10 min default
     
-    with httpx.Client(timeout=60.0) as client:
+    logger.debug(f"Calling LLM (model={chat_model}, timeout={chat_timeout}s, max_tokens={max_tokens})")
+    
+    with httpx.Client(timeout=float(chat_timeout)) as client:
         response = client.post(
             f"{ollama_url}/api/chat",
             json={
@@ -710,6 +713,216 @@ def run_agent(question: str, user_id: str) -> AgentResult:
     logger.info(f"Agent completed: {state.tool_calls_used} tool calls, {len(grounded_citations)} citations")
     
     return AgentResult(
+        answer=cleaned_answer,
+        citations=grounded_citations,
+        trace=trace
+    )
+
+
+# ============================================================================
+# Streaming Generator Version (for SSE)
+# ============================================================================
+
+def run_agent_streaming(question: str, user_id: str):
+    """
+    Execute the bounded agent loop with streaming events.
+    
+    Yields TraceEntry objects as they occur, then yields final AgentResult.
+    Used for SSE streaming to frontend.
+    
+    Args:
+        question: User's question (max 1000 chars)
+        user_id: Keycloak subject ID
+        
+    Yields:
+        TraceEntry objects during execution
+        AgentResult as final yield
+    """
+    trace: List[TraceEntry] = []
+    state = AgentState()
+    
+    # Validate and truncate question
+    if not question or not question.strip():
+        raise AgentError("Question is required")
+    
+    question = question.strip()
+    if len(question) > MAX_QUESTION_LENGTH:
+        logger.warning(f"Question truncated from {len(question)} to {MAX_QUESTION_LENGTH}")
+        question = question[:MAX_QUESTION_LENGTH]
+    
+    logger.info(f"Agent (streaming) starting for question: {question[:100]}...")
+    
+    # ========================================================================
+    # Step 1: Generate plan
+    # ========================================================================
+    plan = generate_plan(question)
+    
+    plan_entry = TraceEntry(
+        type=TraceType.PLAN,
+        steps=plan.steps,
+        notes="Fallback plan used" if plan.is_fallback else None
+    )
+    trace.append(plan_entry)
+    yield plan_entry  # Stream plan to client
+    
+    plan_summary = "; ".join(plan.steps[:3])
+    if len(plan.steps) > 3:
+        plan_summary += f"... (+{len(plan.steps)-3} more)"
+    
+    # ========================================================================
+    # Step 2: Execute tool loop
+    # ========================================================================
+    iteration = 0
+    final_answer = None
+    final_citation_refs = []
+    reprompt_count = 0
+    
+    while iteration < MAX_ITERATIONS and state.tool_calls_used < MAX_TOOL_CALLS:
+        iteration += 1
+        
+        # Build prompt
+        prompt = TOOL_LOOP_PROMPT.format(
+            plan=plan_summary,
+            step_num=min(iteration, len(plan.steps)),
+            total_steps=len(plan.steps),
+            question=question,
+            context=state.build_context_string()
+        )
+        
+        # Yield "thinking" event before LLM call
+        thinking_entry = TraceEntry(
+            type=TraceType.TOOL_CALL,
+            tool="thinking",
+            notes=f"Step {iteration}: Reasoning..."
+        )
+        yield thinking_entry  # Stream thinking state
+        
+        # Get LLM response
+        try:
+            response = call_llm(prompt, max_tokens=400)
+        except Exception as e:
+            logger.error(f"LLM call failed: {e}")
+            error_entry = TraceEntry(
+                type=TraceType.ERROR,
+                error=f"LLM error: {str(e)[:100]}"
+            )
+            trace.append(error_entry)
+            yield error_entry
+            break
+        
+        # Parse action
+        action = parse_llm_action(response)
+        
+        if action is None:
+            reprompt_count += 1
+            if reprompt_count >= 2:
+                state.notes.append("Model output malformed, forcing synthesis")
+                break
+            continue
+        
+        if action.action_type == "final":
+            final_answer = action.answer
+            final_citation_refs = action.citation_refs or []
+            break
+        
+        if action.action_type == "tool_call":
+            if state.tool_calls_used >= MAX_TOOL_CALLS:
+                state.notes.append(f"Tool call limit ({MAX_TOOL_CALLS}) reached")
+                break
+            
+            # Execute tool and stream result
+            success, message = execute_tool(
+                action.tool,
+                action.input or {},
+                user_id,
+                state,
+                trace
+            )
+            
+            # The trace was already appended by execute_tool, yield the last entry
+            if trace:
+                yield trace[-1]
+            
+            if not success:
+                state.notes.append(f"Tool failed: {message}")
+    
+    # ========================================================================
+    # Step 3: Synthesize if no explicit FINAL
+    # ========================================================================
+    if final_answer is None:
+        if not state.opened_citations and not state.search_results:
+            final_answer = "I don't know based on the provided documents."
+            final_entry = TraceEntry(
+                type=TraceType.FINAL,
+                notes="No relevant sources found"
+            )
+            trace.append(final_entry)
+            yield final_entry
+        else:
+            # Yield synthesizing state
+            synth_entry = TraceEntry(
+                type=TraceType.TOOL_CALL,
+                tool="synthesizing",
+                notes="Generating final answer..."
+            )
+            yield synth_entry
+            
+            # Build synthesis context
+            context_parts = []
+            for c in state.opened_citations:
+                context_parts.append(f"[{c.citation_num}] {c.filename} (chunk {c.chunk_index}):\n{c.text}")
+            
+            if not context_parts and state.search_results:
+                for i, r in enumerate(state.search_results[:3], 1):
+                    context_parts.append(f"[{i}] {r.filename}:\n{r.snippet}")
+            
+            synthesis_prompt = SYNTHESIS_PROMPT.format(
+                question=question,
+                context="\n\n".join(context_parts)
+            )
+            
+            try:
+                final_answer = call_llm(synthesis_prompt, max_tokens=600)
+                final_entry = TraceEntry(
+                    type=TraceType.FINAL,
+                    notes=f"Synthesized from {len(state.opened_citations)} citations"
+                )
+                trace.append(final_entry)
+                yield final_entry
+            except Exception as e:
+                logger.error(f"Synthesis failed: {e}")
+                final_answer = "I encountered an error generating the answer."
+                error_entry = TraceEntry(
+                    type=TraceType.ERROR,
+                    error=f"Synthesis failed: {str(e)[:100]}"
+                )
+                trace.append(error_entry)
+                yield error_entry
+    
+    # ========================================================================
+    # Step 4: Ground citations
+    # ========================================================================
+    cleaned_answer, grounded_citations = ground_citations(
+        final_answer,
+        final_citation_refs,
+        state.opened_citations
+    )
+    
+    if not grounded_citations and state.search_results:
+        for r in state.search_results[:3]:
+            grounded_citations.append(GroundedCitation(
+                doc_id=r.doc_id,
+                chunk_id=r.chunk_id,
+                chunk_index=r.chunk_index,
+                snippet=r.snippet,
+                filename=r.filename,
+                score=r.score,
+            ))
+    
+    logger.info(f"Agent (streaming) completed: {state.tool_calls_used} tool calls, {len(grounded_citations)} citations")
+    
+    # Yield final result
+    yield AgentResult(
         answer=cleaned_answer,
         citations=grounded_citations,
         trace=trace

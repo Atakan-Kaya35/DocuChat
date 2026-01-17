@@ -180,11 +180,14 @@ def generate_plan(question: str) -> Plan:
     
     ollama_url = getattr(settings, 'OLLAMA_BASE_URL', 'http://ollama:11434')
     chat_model = getattr(settings, 'OLLAMA_CHAT_MODEL', 'llama3.2')
+    plan_timeout = getattr(settings, 'OLLAMA_PLAN_TIMEOUT', 300)  # 5 min default
     
     prompt = f"{PLAN_SYSTEM_PROMPT}\n\nQuestion: {question}"
     
+    logger.info(f"Generating plan for question: {question[:100]}... (timeout: {plan_timeout}s)")
+    
     try:
-        with httpx.Client(timeout=30.0) as client:
+        with httpx.Client(timeout=float(plan_timeout)) as client:
             response = client.post(
                 f"{ollama_url}/api/chat",
                 json={

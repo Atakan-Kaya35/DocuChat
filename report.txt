@@ -1,0 +1,16 @@
+# Incident Report (2026-01-16)
+
+Summary:
+- Users reported citations opening the wrong chunk after reindex.
+- Root cause suspected: chunk_index stability changed due to updated chunking rules.
+- Another suspected issue: reindex did not delete old doc_chunks; unique constraint prevented overwrite, leaving stale vectors.
+
+Timeline:
+- 10:05 - new chunking deployed (char window increased)
+- 10:20 - reindex performed using v1 runbook
+- 10:35 - first report of mismatch citations
+
+Actions taken:
+- Reverted chunking change
+- Drafted v2 runbook requiring doc_chunks deletion on reindex
+- Added note: embedding model change requires full reindex

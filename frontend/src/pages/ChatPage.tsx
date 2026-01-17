@@ -29,6 +29,9 @@ export default function ChatPage() {
   const [agentMode, setAgentMode] = useState(false);
   const [expandedTraces, setExpandedTraces] = useState<Set<string>>(new Set());
   
+  // Streaming agent thinking state
+  const [streamingSteps, setStreamingSteps] = useState<AgentTraceEntry[]>([]);
+  
   // Modal state for viewing chunks
   const [selectedChunk, setSelectedChunk] = useState<ChunkResponse | null>(null);
   const [loadingChunk, setLoadingChunk] = useState(false);
@@ -73,6 +76,7 @@ export default function ChatPage() {
     setMessages(prev => [...prev, userMessage]);
     setInput('');
     setError(null);
+    setStreamingSteps([]); // Clear previous streaming steps
 
     try {
       // Show retrieving state
@@ -87,17 +91,35 @@ export default function ChatPage() {
       let assistantMessage: Message;
       
       if (agentMode) {
-        // Call Agent API
-        const response: AgentResponse = await apiClient.runAgent(question, { returnTrace: true });
+        // Use streaming Agent API for real-time updates
+        const collectedTrace: AgentTraceEntry[] = [];
+        let finalResponse: AgentResponse | null = null;
         
-        assistantMessage = {
-          id: crypto.randomUUID(),
-          role: 'assistant',
-          content: response.answer,
-          citations: response.citations,
-          trace: response.trace,
-          timestamp: new Date(),
-        };
+        for await (const event of apiClient.runAgentStream(question)) {
+          // Check if it's a trace entry or final response
+          if ('type' in event && !('answer' in event)) {
+            // It's a trace entry
+            const traceEntry = event as AgentTraceEntry;
+            collectedTrace.push(traceEntry);
+            setStreamingSteps([...collectedTrace]);
+          } else if ('answer' in event) {
+            // It's the final response
+            finalResponse = event as AgentResponse;
+          }
+        }
+        
+        if (finalResponse) {
+          assistantMessage = {
+            id: crypto.randomUUID(),
+            role: 'assistant',
+            content: finalResponse.answer,
+            citations: finalResponse.citations,
+            trace: finalResponse.trace,
+            timestamp: new Date(),
+          };
+        } else {
+          throw new Error('No response received from agent');
+        }
       } else {
         // Call standard RAG API
         const response: AskResponse = await apiClient.ask(question);
@@ -112,6 +134,7 @@ export default function ChatPage() {
       }
       
       setMessages(prev => [...prev, assistantMessage]);
+      setStreamingSteps([]); // Clear streaming steps after message is added
       
     } catch (err: unknown) {
       console.error('Ask failed:', err);
@@ -128,9 +151,10 @@ export default function ChatPage() {
       setMessages(prev => [...prev, errorMsg]);
     } finally {
       setChatState('idle');
+      setStreamingSteps([]);
       inputRef.current?.focus();
     }
-  }, [input, chatState]);
+  }, [input, chatState, agentMode]);
 
   // Handle citation click
   const handleCitationClick = useCallback(async (citation: Citation) => {
@@ -188,16 +212,24 @@ export default function ChatPage() {
         <h1 style={styles.title}>DocuChat</h1>
         <div style={styles.headerActions}>
           {/* Agent Mode Toggle */}
-          <label style={styles.toggleLabel}>
-            <input 
-              type="checkbox"
-              checked={agentMode}
-              onChange={(e) => setAgentMode(e.target.checked)}
-              style={styles.toggleCheckbox}
+          <button
+            type="button"
+            onClick={() => setAgentMode(!agentMode)}
+            style={{
+              ...styles.toggleButton,
+              background: agentMode ? '#0066cc' : '#ccc',
+            }}
+            aria-pressed={agentMode}
+            title={agentMode ? 'Agent Mode ON - Using multi-step reasoning' : 'Agent Mode OFF - Using simple RAG'}
+          >
+            <span
+              style={{
+                ...styles.toggleKnob,
+                transform: agentMode ? 'translateX(16px)' : 'translateX(0)',
+              }}
             />
-            <span style={styles.toggleSlider} />
-            <span style={styles.toggleText}>Agent Mode</span>
-          </label>
+          </button>
+          <span style={styles.toggleText}>{agentMode ? '🤖 Agent' : '💬 RAG'}</span>
           <button style={styles.navButton} onClick={() => navigate('/')}>
             Documents
           </button>
@@ -320,7 +352,63 @@ export default function ChatPage() {
         {chatState !== 'idle' && (
           <div style={styles.loadingIndicator}>
             {chatState === 'retrieving' && '🔍 Retrieving relevant chunks...'}
-            {chatState === 'thinking' && '🤔 Thinking...'}
+            {chatState === 'thinking' && agentMode && streamingSteps.length > 0 ? (
+              <div style={styles.streamingContainer}>
+                <div style={styles.streamingHeader}>🤖 Agent Thinking...</div>
+                <div style={styles.streamingSteps}>
+                  {streamingSteps.map((step, idx) => (
+                    <div key={idx} style={styles.streamingStep}>
+                      {step.type === 'plan' && step.steps && (
+                        <div style={styles.stepPlan}>
+                          <span style={styles.stepIcon}>📋</span>
+                          <span>Plan: {step.steps.slice(0, 3).join(' → ')}{step.steps.length > 3 ? '...' : ''}</span>
+                        </div>
+                      )}
+                      {step.type === 'tool_call' && step.tool === 'thinking' && (
+                        <div style={styles.stepThinking}>
+                          <span style={styles.stepIcon}>💭</span>
+                          <span>{step.notes || 'Reasoning...'}</span>
+                        </div>
+                      )}
+                      {step.type === 'tool_call' && step.tool === 'search_docs' && (
+                        <div style={styles.stepTool}>
+                          <span style={styles.stepIcon}>🔍</span>
+                          <span>Searching: {(step.input?.query as string) || 'documents'}</span>
+                          {step.outputSummary && <span style={styles.stepResult}> → {step.outputSummary}</span>}
+                        </div>
+                      )}
+                      {step.type === 'tool_call' && step.tool === 'open_citation' && (
+                        <div style={styles.stepTool}>
+                          <span style={styles.stepIcon}>📖</span>
+                          <span>Reading chunk...</span>
+                          {step.outputSummary && <span style={styles.stepResult}> → {step.outputSummary}</span>}
+                        </div>
+                      )}
+                      {step.type === 'tool_call' && step.tool === 'synthesizing' && (
+                        <div style={styles.stepThinking}>
+                          <span style={styles.stepIcon}>✍️</span>
+                          <span>{step.notes || 'Generating answer...'}</span>
+                        </div>
+                      )}
+                      {step.type === 'final' && (
+                        <div style={styles.stepFinal}>
+                          <span style={styles.stepIcon}>✅</span>
+                          <span>Finalizing answer...</span>
+                        </div>
+                      )}
+                      {step.type === 'error' && (
+                        <div style={styles.stepError}>
+                          <span style={styles.stepIcon}>⚠️</span>
+                          <span>{step.error || 'An error occurred'}</span>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : chatState === 'thinking' ? (
+              '🤔 Thinking...'
+            ) : null}
           </div>
         )}
       </div>
@@ -398,31 +486,32 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     gap: '0.5rem',
   },
-  toggleLabel: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '0.5rem',
+  toggleButton: {
+    width: '40px',
+    height: '24px',
+    borderRadius: '12px',
+    border: 'none',
     cursor: 'pointer',
-    userSelect: 'none',
-    padding: '0.25rem 0.5rem',
-    background: '#f0f0f0',
-    borderRadius: '6px',
-  },
-  toggleCheckbox: {
-    display: 'none',
-  },
-  toggleSlider: {
-    width: '36px',
-    height: '20px',
-    background: '#ccc',
-    borderRadius: '10px',
-    position: 'relative',
+    position: 'relative' as const,
     transition: 'background 0.2s',
+    padding: 0,
+  },
+  toggleKnob: {
+    position: 'absolute' as const,
+    top: '2px',
+    left: '2px',
+    width: '20px',
+    height: '20px',
+    background: 'white',
+    borderRadius: '50%',
+    boxShadow: '0 2px 4px rgba(0,0,0,0.2)',
+    transition: 'transform 0.2s',
   },
   toggleText: {
     fontSize: '0.875rem',
-    fontWeight: 500,
+    fontWeight: 600,
     color: '#333',
+    marginRight: '0.5rem',
   },
   navButton: {
     padding: '0.5rem 1rem',
@@ -532,6 +621,71 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '1rem',
     color: '#666',
     fontStyle: 'italic',
+  },
+  streamingContainer: {
+    textAlign: 'left',
+    background: '#f8f9fa',
+    borderRadius: '8px',
+    padding: '1rem',
+    maxWidth: '600px',
+    margin: '0 auto',
+  },
+  streamingHeader: {
+    fontWeight: 600,
+    color: '#0066cc',
+    marginBottom: '0.75rem',
+    fontSize: '0.9rem',
+  },
+  streamingSteps: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: '0.5rem',
+  },
+  streamingStep: {
+    fontSize: '0.85rem',
+    color: '#444',
+    padding: '0.25rem 0',
+    borderBottom: '1px solid #e0e0e0',
+  },
+  stepPlan: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    gap: '0.5rem',
+    color: '#6c5ce7',
+  },
+  stepThinking: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.5rem',
+    color: '#666',
+    fontStyle: 'italic',
+  },
+  stepTool: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.5rem',
+    flexWrap: 'wrap' as const,
+    color: '#00b894',
+  },
+  stepResult: {
+    color: '#636e72',
+    fontSize: '0.8rem',
+  },
+  stepFinal: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.5rem',
+    color: '#00b894',
+    fontWeight: 500,
+  },
+  stepError: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.5rem',
+    color: '#d63031',
+  },
+  stepIcon: {
+    flexShrink: 0,
   },
   inputContainer: {
     padding: '1rem',

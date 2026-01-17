@@ -1,0 +1,19 @@
+# Architecture Notes (internal)
+
+## Services
+- nginx: routes / to frontend, /api/ to backend, /auth/ to keycloak
+- backend: REST + websocket
+- worker: indexing pipeline
+- postgres + pgvector: documents, jobs, chunks + embeddings
+- redis: pub/sub + rate limiting
+
+## Data model assumptions
+- documents.status values:
+  - UPLOADED, QUEUED, INDEXING, INDEXED, FAILED
+- index_jobs.status values:
+  - QUEUED, RUNNING, COMPLETE, FAILED
+
+## Known pitfalls
+- If you delete documents row before doc_chunks, you may orphan vectors (cleanup required).
+- Reindex should clear old chunks if chunking strategy changes.
+- Rate limiter should be Redis INCR + EXPIRE with Retry-After.

@@ -355,9 +355,23 @@ export default function HomePage() {
           Login with Keycloak
         </button>
         
-        <div style={{ marginTop: '1rem', fontSize: '0.75rem', color: '#999' }}>
-          <p>Debug: isLoading={String(auth.isLoading)}, isAuth={String(auth.isAuthenticated)}</p>
-        </div>
+        <button
+          style={styles.registerButton}
+          onClick={() => {
+            // Construct Keycloak registration URL
+            const keycloakUrl = import.meta.env.VITE_KEYCLOAK_URL || 'http://localhost';
+            const realm = import.meta.env.VITE_KEYCLOAK_REALM || 'docuchat';
+            const clientId = import.meta.env.VITE_KEYCLOAK_CLIENT_ID || 'docuchat-frontend';
+            const redirectUri = encodeURIComponent(`${window.location.origin}/callback`);
+            const registrationUrl = `${keycloakUrl}/realms/${realm}/protocol/openid-connect/registrations?client_id=${clientId}&redirect_uri=${redirectUri}&response_type=code&scope=openid`;
+            console.log('[HomePage] Redirecting to registration:', registrationUrl);
+            window.location.href = registrationUrl;
+          }}
+        >
+          Create Account
+        </button>
+        
+        <p style={styles.orDivider}>or</p>
       </div>
     </div>
   );
@@ -398,6 +412,24 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: '6px',
     cursor: 'pointer',
     transition: 'background 0.2s',
+    width: '100%',
+  },
+  registerButton: {
+    background: 'transparent',
+    color: '#0066cc',
+    border: '2px solid #0066cc',
+    padding: '0.75rem 1.5rem',
+    fontSize: '1rem',
+    borderRadius: '6px',
+    cursor: 'pointer',
+    transition: 'all 0.2s',
+    width: '100%',
+    marginTop: '0.75rem',
+  },
+  orDivider: {
+    color: '#999',
+    fontSize: '0.875rem',
+    margin: '0.75rem 0 0 0',
   },
   actionButtons: {
     display: 'flex',

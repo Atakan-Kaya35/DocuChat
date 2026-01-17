@@ -1,0 +1,31 @@
+# Keycloak changes (2026-01-18)
+
+This document records changes that broke login previously.
+
+## Redirect URIs (frontend client id: frontend)
+
+Valid Redirect URIs:
+- http://localhost/*
+- http://localhost/auth/*
+- http://localhost/ (yes, trailing slash)
+
+Web Origins:
+- http://localhost
+
+## NGINX reverse proxy requirement
+
+Keycloak must be reachable at:
+- http://localhost/auth/
+
+Backend issuer expectations:
+- issuer must match realm URL (example):
+  http://keycloak:8080/realms/docuchat
+
+If you change realm name, update backend config:
+- KC_REALM
+- KC_ISSUER (if explicitly set)
+- JWKS URL
+
+## Known gotcha
+
+If the redirect URI is missing

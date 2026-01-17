@@ -1,0 +1,36 @@
+# DocuChat Operations Runbook (v2 - current)
+
+## Reindex a document (v2 procedure)
+Use this when:
+- embedding model changed
+- chunking rules changed
+- doc file replaced (same docId, new file)
+
+Steps:
+1. Mark documents.status='INDEXING_REQUESTED' (not QUEUED).
+2. Delete existing doc_chunks for that document_id.
+3. Insert new index_jobs row: status='QUEUED', stage='RECEIVED'.
+4. Worker claims job with SELECT ... FOR UPDATE SKIP LOCKED.
+5. On success: documents.status='INDEXED', index_jobs.status='COMPLETE'.
+
+Notes:
+- Reindex IS mandatory if the embedding model changes.
+- Reindex is mandatory if chunking strategy changes.
+
+## Delete a document (v2 procedure)
+1. Delete doc_chunks where document_id = :docId.
+2. Delete index_jobs where document_id = :docId.
+3. Delete the stored file at documents.storage_path.
+4. Delete documents row last.
+5. Verify: no remaining chunks for the docId.
+
+## Rate limits (v2)
+- /api/docs/upload: 5 per 10 minutes per user.
+- /api/chat/ask: 30 per 10 minutes per user.
+
+## Retry policy (v2)
+Retryable: network timeouts, 429, 503.
+Not retryable: 400 invalid input, model not found.
+
+- Embeddings: max 3 attempts, backoff 0.5s, 2s, 5s (+ jitter).
+- Generation: max 2 attempts, backoff 1s, 3s (+ jitter).

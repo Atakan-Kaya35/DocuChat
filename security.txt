@@ -1,0 +1,21 @@
+# Security & Guardrails
+
+## Logging policy
+- Log metadata only:
+  - userId (Keycloak sub), docId/jobId, event type, status, latency, error code
+- Do NOT log:
+  - document text
+  - full prompts
+  - tokens
+  - access tokens
+
+## Idempotency policy
+- A document is considered identical if (owner_user_id + sha256(file bytes)) matches.
+- Re-upload behavior:
+  - Return existing documentId and status
+  - Do NOT create a new IndexJob automatically
+
+## Agent mode limits
+- Plan: 2–5 steps
+- Tool calls: hard cap <= 5
+- If sources are insufficient: answer must say so clearly.
