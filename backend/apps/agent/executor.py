@@ -182,10 +182,12 @@ class ParsedAction:
 
 def parse_llm_action(response: str) -> Optional[ParsedAction]:
     """
+    !!!
     Parse LLM response expecting TOOL_CALL or FINAL format.
     
     Returns ParsedAction or None if malformed.
     """
+    # for the tool to not spiral, the format is checked once
     text = response.strip()
     
     # Try TOOL_CALL format
@@ -614,6 +616,7 @@ def run_agent(question: str, user_id: str) -> AgentResult:
         
         if action is None:
             # Malformed output - treat as implicit FINAL or reprompt once
+            # reprompt ONLY once so it does not spiral
             reprompt_count += 1
             if reprompt_count >= 2:
                 # Give up and force synthesis

@@ -6,34 +6,176 @@ This document defines the REST API contracts for DocuChat.
 
 ## Table of Contents
 
-1. [Authentication](#authentication)
-2. [Documents API](#documents-api)
-3. [RAG API](#rag-api)
-4. [Agent API](#agent-api)
-5. [Health Endpoints](#health-endpoints)
+1. [Base Conventions](#base-conventions)
+2. [Authentication](#authentication)
+3. [Error Handling](#error-handling)
+4. [Rate Limiting](#rate-limiting)
+5. [Documents API](#documents-api)
+6. [RAG API](#rag-api)
+7. [Agent API](#agent-api)
+8. [Health Endpoints](#health-endpoints)
+
+---
+
+## Base Conventions
+
+### Base URL
+
+All API endpoints are prefixed with `/api`:
+
+```
+http://localhost/api/...
+```
+
+### Content Types
+
+- **Request:** `application/json` (except file uploads)
+- **Response:** `application/json`
+- **File Upload:** `multipart/form-data`
+
+### Date/Time Format
+
+All timestamps use ISO 8601 format in UTC:
+
+```
+2026-01-15T10:30:00Z
+```
 
 ---
 
 ## Authentication
 
-All API endpoints (except health checks) require a valid JWT token from Keycloak.
+All API endpoints (except `/health/*`) require a valid JWT token from Keycloak.
 
-**Header:**
+### Request Header
+
 ```
 Authorization: Bearer <access_token>
 ```
 
-**Error Response (401):**
+### Token Acquisition
+
+Obtain tokens via Keycloak OIDC:
+
+```bash
+# Token endpoint
+POST /auth/realms/docuchat/protocol/openid-connect/token
+
+# Example (for testing)
+curl -X POST http://localhost/auth/realms/docuchat/protocol/openid-connect/token \
+  -d "client_id=docuchat-frontend" \
+  -d "grant_type=password" \
+  -d "username=testuser" \
+  -d "password=testpassword"
+```
+
+### User Identity
+
+The `sub` claim in the JWT is used as `owner_user_id` for all data scoping.
+
+---
+
+## Error Handling
+
+All errors follow a consistent format:
+
 ```json
 {
-  "error": "Invalid or expired token",
-  "code": "AUTH_FAILED"
+  "error": "Human-readable error message",
+  "code": "ERROR_CODE",
+  "details": {}  // Optional, for validation errors
+}
+```
+
+### Standard Error Codes
+
+| HTTP Status | Code | Description |
+|-------------|------|-------------|
+| 400 | `VALIDATION_ERROR` | Invalid request data |
+| 401 | `AUTH_FAILED` | Missing or invalid token |
+| 403 | `FORBIDDEN` | Access denied to resource |
+| 404 | `NOT_FOUND` | Resource does not exist |
+| 413 | `FILE_TOO_LARGE` | Upload exceeds size limit |
+| 415 | `UNSUPPORTED_TYPE` | File type not supported |
+| 429 | `RATE_LIMITED` | Too many requests |
+| 500 | `INTERNAL_ERROR` | Server error |
+| 503 | `LLM_UNAVAILABLE` | Ollama service unavailable |
+
+### Validation Error Example
+
+```json
+{
+  "error": "Validation failed",
+  "code": "VALIDATION_ERROR",
+  "details": {
+    "question": "Question is required",
+    "topK": "Must be between 1 and 10"
+  }
 }
 ```
 
 ---
 
+## Rate Limiting
+
+Rate limits are applied per-user (based on JWT `sub` claim).
+
+### Limits
+
+| Endpoint | Limit | Window |
+|----------|-------|--------|
+| `POST /api/docs/upload` | 5 requests | 1 minute |
+| `POST /api/docs/upload` | 50 requests | 1 hour |
+| `POST /api/rag/ask` | 20 requests | 1 minute |
+| `POST /api/agent/run` | 20 requests | 1 minute |
+
+### Rate Limit Headers
+
+```
+X-RateLimit-Limit: 20
+X-RateLimit-Remaining: 15
+X-RateLimit-Reset: 1705312800
+```
+
+### Rate Limited Response (429)
+
+```json
+{
+  "error": "Rate limit exceeded. Try again in 30 seconds.",
+  "code": "RATE_LIMITED",
+  "retryAfter": 30
+}
+```
+
+```
+Retry-After: 30
+```
+
+---
+
 ## Documents API
+
+### Get Current User
+
+`GET /api/me`
+
+Returns information about the authenticated user.
+
+**Request:**
+```bash
+curl -X GET http://localhost/api/me \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response (200 OK):**
+```json
+{
+  "id": "keycloak-user-uuid",
+  "username": "testuser",
+  "email": "user@example.com",
+  "roles": ["user"]
+}
+```
 
 ### Upload Document
 
@@ -41,13 +183,121 @@ Authorization: Bearer <access_token>
 
 Upload a document for indexing. Idempotent - re-uploading identical content returns existing document.
 
-**Request:** `multipart/form-data`
-- `file`: The document file (PDF, TXT, MD)
+**Request:**
+```bash
+curl -X POST http://localhost/api/docs/upload \
+  -H "Authorization: Bearer <token>" \
+  -F "file=@document.pdf"
+```
+
+**Supported Types:** PDF, TXT, MD  
+**Max Size:** 10 MB
 
 **Response (201 Created):**
 ```json
 {
-  "documentId": "uuid",
+  "documentId": "550e8400-e29b-41d4-a716-446655440000",
+  "jobId": "550e8400-e29b-41d4-a716-446655440001",
+  "status": "QUEUED",
+  "filename": "document.pdf"
+}
+```
+
+**Response (200 OK - Duplicate):**
+```json
+{
+  "documentId": "550e8400-e29b-41d4-a716-446655440000",
+  "jobId": "550e8400-e29b-41d4-a716-446655440001",
+  "status": "INDEXED",
+  "filename": "document.pdf",
+  "duplicate": true,
+  "message": "Document with identical content already exists"
+}
+```
+
+**Error (415 Unsupported Type):**
+```json
+{
+  "error": "Unsupported file type: application/zip",
+  "code": "UNSUPPORTED_TYPE",
+  "supportedTypes": ["application/pdf", "text/plain", "text/markdown"]
+}
+```
+
+**Error (413 File Too Large):**
+```json
+{
+  "error": "File size exceeds limit of 10 MB",
+  "code": "FILE_TOO_LARGE",
+  "maxSizeBytes": 10485760
+}
+```
+
+### List Documents
+
+`GET /api/docs`
+
+List all documents for the authenticated user.
+
+**Request:**
+```bash
+curl -X GET http://localhost/api/docs \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response (200 OK):**
+```json
+{
+  "documents": [
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440000",
+      "filename": "document.pdf",
+      "contentType": "application/pdf",
+      "sizeBytes": 102400,
+      "status": "INDEXED",
+      "createdAt": "2026-01-15T10:30:00Z",
+      "updatedAt": "2026-01-15T10:31:00Z",
+      "latestJob": {
+        "id": "550e8400-e29b-41d4-a716-446655440001",
+        "status": "INDEXED",
+        "stage": "COMPLETED",
+        "progress": 100
+      }
+    }
+  ]
+}
+```
+
+### Get Document Chunk
+
+`GET /api/docs/<docId>/chunks/<chunkIndex>`
+
+Retrieve a specific chunk from a document (for viewing citations).
+
+**Request:**
+```bash
+curl -X GET http://localhost/api/docs/550e8400.../chunks/3 \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response (200 OK):**
+```json
+{
+  "docId": "550e8400-e29b-41d4-a716-446655440000",
+  "chunkId": "550e8400-e29b-41d4-a716-446655440010",
+  "chunkIndex": 3,
+  "text": "Full text of the chunk...",
+  "filename": "document.pdf"
+}
+```
+
+**Error (403 Forbidden):**
+```json
+{
+  "error": "You do not have access to this document",
+  "code": "FORBIDDEN"
+}
+```
   "jobId": "uuid",
   "status": "QUEUED",
   "filename": "document.pdf"
@@ -115,6 +365,13 @@ Get details of a specific document.
 Full RAG pipeline: retrieve relevant chunks + LLM generation.
 
 **Request:**
+```bash
+curl -X POST http://localhost/api/rag/ask \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What is the main topic?"}'
+```
+
 ```json
 {
   "question": "What is the main topic?",
@@ -124,31 +381,62 @@ Full RAG pipeline: retrieve relevant chunks + LLM generation.
 }
 ```
 
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `question` | string | Yes | - | The question to answer |
+| `topK` | integer | No | 5 | Number of chunks to retrieve (1-10) |
+| `temperature` | number | No | 0.2 | LLM temperature (0.0-1.0) |
+| `maxTokens` | integer | No | 500 | Max response tokens |
+
 **Response (200 OK):**
 ```json
 {
   "answer": "Based on the documents, the main topic is...[1]",
   "citations": [
     {
-      "docId": "uuid",
-      "chunkId": "uuid",
+      "docId": "550e8400-e29b-41d4-a716-446655440000",
+      "chunkId": "550e8400-e29b-41d4-a716-446655440010",
       "chunkIndex": 3,
-      "snippet": "...",
+      "snippet": "The document discusses the importance of...",
       "score": 0.1234,
-      "documentTitle": "file.pdf"
+      "documentTitle": "report.pdf"
     }
   ],
   "model": "llama3.2"
 }
 ```
 
+**Response (200 OK - Insufficient Sources):**
+
+When no relevant documents are found or content doesn't answer the question:
+
+```json
+{
+  "answer": "I don't know based on the provided documents.",
+  "citations": [],
+  "model": "llama3.2"
+}
+```
+
+This response is expected when:
+- No documents have been uploaded
+- Uploaded documents don't contain relevant information
+- The question is about topics not covered in the documents
+
 ### Retrieve Chunks
 
 `POST /api/rag/retrieve`
 
-Retrieve relevant chunks without LLM generation (for testing).
+Retrieve relevant chunks without LLM generation (for testing/debugging).
 
 **Request:**
+```bash
+curl -X POST http://localhost/api/rag/retrieve \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "search terms"}'
+```
+
 ```json
 {
   "query": "search terms",
@@ -160,7 +448,16 @@ Retrieve relevant chunks without LLM generation (for testing).
 ```json
 {
   "query": "search terms",
-  "citations": [...]
+  "citations": [
+    {
+      "docId": "550e8400-e29b-41d4-a716-446655440000",
+      "chunkId": "550e8400-e29b-41d4-a716-446655440010",
+      "chunkIndex": 3,
+      "snippet": "...",
+      "score": 0.1234,
+      "documentTitle": "report.pdf"
+    }
+  ]
 }
 ```
 
@@ -175,6 +472,13 @@ Retrieve relevant chunks without LLM generation (for testing).
 Execute bounded agent loop with planning and tool use.
 
 **Request:**
+```bash
+curl -X POST http://localhost/api/agent/run \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What are the key findings?", "returnTrace": true}'
+```
+
 ```json
 {
   "question": "What are the key findings across all my documents?",
@@ -192,15 +496,15 @@ Execute bounded agent loop with planning and tool use.
 **Response (200 OK):**
 ```json
 {
-  "answer": "Based on my analysis of your documents...",
+  "answer": "Based on my analysis of your documents, the key findings are...[1][2]",
   "citations": [
     {
-      "docId": "uuid",
-      "chunkId": "uuid",
+      "docId": "550e8400-e29b-41d4-a716-446655440000",
+      "chunkId": "550e8400-e29b-41d4-a716-446655440010",
       "chunkIndex": 3,
-      "snippet": "...",
+      "snippet": "The study found that...",
       "score": 0.1234,
-      "documentTitle": "file.pdf"
+      "documentTitle": "report.pdf"
     }
   ],
   "trace": [
@@ -226,11 +530,46 @@ Execute bounded agent loop with planning and tool use.
     },
     {
       "type": "final",
-      "notes": "Completed in 3 tool calls"
+      "notes": "Synthesized from 2 citations"
     }
   ]
 }
 ```
+
+**Response (200 OK - Insufficient Sources):**
+
+When the agent cannot find relevant information:
+
+```json
+{
+  "answer": "I don't know based on the provided documents.",
+  "citations": [],
+  "trace": [
+    {
+      "type": "plan",
+      "steps": [
+        "Search for information about the topic",
+        "Synthesize answer from findings"
+      ]
+    },
+    {
+      "type": "tool_call",
+      "tool": "search_docs",
+      "input": { "query": "mars capital city" },
+      "outputSummary": "No results found"
+    },
+    {
+      "type": "final",
+      "notes": "No relevant sources found"
+    }
+  ]
+}
+```
+
+The grounding contract:
+- If sources exist and are relevant → cite them
+- If sources don't contain the answer → admit "I don't know"
+- Never make up information not in the documents
 
 ### Agent Hard Limits
 
@@ -243,7 +582,7 @@ These limits are enforced to ensure predictable, bounded execution:
 | Question length | 1000 chars | Bounded input |
 | Query length (search) | 500 chars | Focused searches |
 | Max search results | 5 | Top-k retrieval |
-| Max citation text | 5000 chars | Bounded context |
+| Max citation text | 1500 chars | Bounded context per LLM call |
 
 ### Available Tools
 

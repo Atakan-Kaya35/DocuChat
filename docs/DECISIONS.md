@@ -123,7 +123,22 @@ If a fallback cloud provider is ever used for debugging, hard cap target is **�
 - Final acceptance checklist run
 
 ---
+## Architecture Decision Records (ADRs)
 
+Detailed architectural decisions are documented in the `/docs/adrs/` folder:
+
+| ADR | Title | Summary |
+|-----|-------|---------|
+| [0001](adrs/0001-user-scoping-authorization.md) | User Scoping & Authorization | owner_user_id scoping everywhere |
+| [0002](adrs/0002-chunking-strategy.md) | Chunking Strategy | Fixed-size with overlap, deterministic |
+| [0003](adrs/0003-vector-database-pgvector.md) | Vector Database (pgvector) | Single Postgres for all data |
+| [0004](adrs/0004-idempotency-policy.md) | Idempotency Policy | Content hash uniqueness per user |
+| [0005](adrs/0005-agent-tool-loop-cap.md) | Agent Tool Loop Cap | Max 5 calls, exactly 2 tools |
+| [0006](adrs/0006-ollama-local-inference.md) | Ollama Local Inference | Zero-cost local LLM |
+
+All ADRs include an LLM disclosure statement per project policy.
+
+---
 ## “Re-Alignment” Habit (LLM + Docs)
 
 - Before starting a new subsystem (Auth, Indexing, RAG, Agent), paste a short “alignment prompt” to the coding LLM:
