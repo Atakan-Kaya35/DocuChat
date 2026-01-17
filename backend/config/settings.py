@@ -32,6 +32,7 @@ INSTALLED_APPS = [
     'apps.docs',
     'apps.indexing',
     'apps.rag',
+    'apps.agent',
 ]
 
 MIDDLEWARE = [

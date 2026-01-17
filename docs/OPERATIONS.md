@@ -11,7 +11,8 @@ This document contains operational procedures, policies, and runbooks for DocuCh
 3. [Rate Limiting](#rate-limiting)
 4. [Audit Logging](#audit-logging)
 5. [Health Checks](#health-checks)
-6. [Runbooks](#runbooks)
+6. [Agent Limits](#agent-limits)
+7. [Runbooks](#runbooks)
 
 ---
 
@@ -372,3 +373,351 @@ worker:
 |-------|---------------|--------|---------|-------------------|
 | Liveness | 10s | 10s | 3s | 3 |
 | Readiness | 5s | 5s | 3s | 3 |
+
+---
+
+## Agent Limits
+
+The agent mode provides bounded, predictable execution with hard limits.
+
+### Hard Limits
+
+| Limit | Value | Rationale |
+|-------|-------|-----------|
+| Plan steps | 2–5 | Forces focused, actionable plans |
+| Max tool calls per run | 5 | Prevents runaway loops |
+| Max iterations | 5 | Same as tool calls for MVP |
+| Question length | 1000 chars | Bounded input size |
+| Search query length | 500 chars | Focused searches |
+| Max search results (k) | 5 | Top-k retrieval |
+| Max citation text for LLM | 1500 chars | Avoid prompt bloat |
+| Rolling context window | 3 citations | Only last N opened citations |
+
+### Available Tools
+
+The agent has access to exactly **two** tools:
+
+1. **`search_docs`** - Semantic search across user's documents
+2. **`open_citation`** - Retrieve full text of a specific chunk
+
+No additional tools are available. This is intentional for:
+- Debuggability (small, fixed action space)
+- Security (no arbitrary code execution)
+- Predictability (bounded behavior)
+
+### Strict Action Format
+
+The agent uses a strict TOOL_CALL/FINAL protocol:
+
+```
+TOOL_CALL {"tool": "search_docs", "input": {"query": "..."}}
+TOOL_CALL {"tool": "open_citation", "input": {"docId": "...", "chunkId": "..."}}
+FINAL {"answer": "...", "citations": [1, 2]}
+```
+
+**Malformed output handling:**
+- If model outputs anything else, re-prompt once
+- After 2 malformed outputs, force synthesis
+- Caps are always obeyed regardless of model behavior
+
+### Tool Result Compression
+
+To avoid prompt bloat:
+- **Search results**: Only `docId/chunkId/snippet/score` (no full text)
+- **Open citation**: Text capped at 1500 chars
+- **Rolling context**: Only last 3 opened citations kept
+
+### Citation Grounding
+
+All citations in the final response are grounded:
+1. Citations reference actual opened chunks (by number)
+2. Hallucinated `[N]` references are stripped from answer
+3. Only citations that exist in DB are returned
+
+### Execution Flow
+
+```
+1. Plan      → LLM generates 2-5 step plan
+2. Execute   → Agent calls tools via TOOL_CALL/FINAL protocol (max 5)
+3. Ground    → Map citation refs to actual opened chunks
+4. Return    → Answer + grounded citations + optional trace
+```
+
+### Fallback Behavior
+
+If plan parsing fails, agent uses default 3-step plan:
+1. Search documents for relevant information
+2. Open best citations to read details  
+3. Synthesize answer from gathered context
+
+### Trace Structure (when `returnTrace=true`)
+
+```json
+{
+  "trace": [
+    {"type": "plan", "steps": ["Search...", "Open...", "Synthesize..."]},
+    {"type": "tool_call", "tool": "search_docs", "input": {...}, "outputSummary": "..."},
+    {"type": "tool_call", "tool": "open_citation", "input": {...}, "outputSummary": "..."},
+    {"type": "final", "notes": "Synthesized from 2 citations"}
+  ]
+}
+```
+
+The trace is minimal:
+- No full document text leaked
+- Only tool names, inputs, and summaries
+- Errors included with truncated messages
+
+### Timeout
+
+Agent execution has a 60-second timeout. If exceeded:
+- Partial results returned if available
+- Error logged with trace
+- HTTP 504 returned if no partial results
+
+---
+
+## Runbooks
+
+### Runbook: Reindex a Document
+
+**When to use:** Document content was updated, indexing failed, or embeddings need refresh.
+
+**Prerequisites:**
+- Access to the database (psql or Django shell)
+- Worker container is running
+
+**Steps:**
+
+1. **Find the document ID**
+   ```bash
+   docker exec -it docuchat-backend python manage.py shell
+   ```
+   ```python
+   from apps.docs.models import Document
+   doc = Document.objects.get(filename='myfile.pdf', owner_user_id='user123')
+   print(f"Document ID: {doc.id}")
+   ```
+
+2. **Delete existing chunks** (will be recreated)
+   ```python
+   from apps.indexing.models import DocumentChunk
+   deleted, _ = DocumentChunk.objects.filter(document=doc).delete()
+   print(f"Deleted {deleted} chunks")
+   ```
+
+3. **Reset document and job status**
+   ```python
+   from apps.docs.models import IndexJob, DocumentStatus, IndexJobStatus
+   
+   # Reset document status
+   doc.status = DocumentStatus.QUEUED
+   doc.save(update_fields=['status', 'updated_at'])
+   
+   # Create new index job
+   job = IndexJob.objects.create(
+       document=doc,
+       status=IndexJobStatus.QUEUED,
+       stage='RECEIVED',
+       progress=0
+   )
+   print(f"Created job {job.id}")
+   ```
+
+4. **Verify worker picks up the job**
+   ```bash
+   docker logs -f docuchat-worker
+   ```
+
+5. **Verify completion**
+   ```python
+   job.refresh_from_db()
+   print(f"Job status: {job.status}, progress: {job.progress}%")
+   ```
+
+---
+
+### Runbook: Delete a Document
+
+**When to use:** User requests deletion, or document needs complete removal.
+
+**Prerequisites:**
+- Access to the database
+- Access to file storage
+
+**Steps:**
+
+1. **Find the document**
+   ```python
+   from apps.docs.models import Document
+   doc = Document.objects.get(id='<document-uuid>')
+   ```
+
+2. **Delete chunks from vector DB**
+   ```python
+   from apps.indexing.models import DocumentChunk
+   deleted, _ = DocumentChunk.objects.filter(document=doc).delete()
+   print(f"Deleted {deleted} chunks")
+   ```
+
+3. **Delete index jobs**
+   ```python
+   from apps.docs.models import IndexJob
+   deleted, _ = IndexJob.objects.filter(document=doc).delete()
+   print(f"Deleted {deleted} index jobs")
+   ```
+
+4. **Delete file from storage**
+   ```python
+   from pathlib import Path
+   from django.conf import settings
+   
+   file_path = Path(settings.UPLOAD_ROOT) / doc.storage_path
+   if file_path.exists():
+       file_path.unlink()
+       print(f"Deleted file: {file_path}")
+   
+   # Also delete extracted text if exists
+   extracted_path = Path(settings.EXTRACTED_ROOT) / f"{doc.id}.txt"
+   if extracted_path.exists():
+       extracted_path.unlink()
+       print(f"Deleted extracted: {extracted_path}")
+   ```
+
+5. **Delete document record**
+   ```python
+   doc.delete()
+   print("Document deleted")
+   ```
+
+6. **Verify deletion**
+   ```python
+   from apps.docs.models import Document
+   try:
+       Document.objects.get(id='<document-uuid>')
+       print("ERROR: Document still exists!")
+   except Document.DoesNotExist:
+       print("Confirmed: Document deleted")
+   ```
+
+---
+
+### Runbook: Change LLM/Embedding Model
+
+**When to use:** Switching to a different model (e.g., gemma → llama3).
+
+**Impact:** All existing embeddings become incompatible. Full reindex required.
+
+**Steps:**
+
+1. **Stop the worker**
+   ```bash
+   docker stop docuchat-worker
+   ```
+
+2. **Pull new model in Ollama**
+   ```bash
+   docker exec -it docuchat-ollama ollama pull llama3.2
+   docker exec -it docuchat-ollama ollama pull nomic-embed-text  # if changing embedding model
+   ```
+
+3. **Update configuration**
+   Edit `backend/.env.sample`:
+   ```bash
+   OLLAMA_CHAT_MODEL=llama3.2
+   # OLLAMA_EMBED_MODEL=nomic-embed-text  # if changing
+   ```
+
+4. **If embedding model changed: Delete ALL chunks**
+   ```bash
+   docker exec -it docuchat-backend python manage.py shell
+   ```
+   ```python
+   from apps.indexing.models import DocumentChunk
+   count = DocumentChunk.objects.count()
+   DocumentChunk.objects.all().delete()
+   print(f"Deleted {count} chunks")
+   ```
+
+5. **Reset all documents to QUEUED**
+   ```python
+   from apps.docs.models import Document, IndexJob, DocumentStatus, IndexJobStatus
+   
+   docs = Document.objects.filter(status=DocumentStatus.INDEXED)
+   for doc in docs:
+       doc.status = DocumentStatus.QUEUED
+       doc.save(update_fields=['status', 'updated_at'])
+       
+       # Create new index job
+       IndexJob.objects.create(
+           document=doc,
+           status=IndexJobStatus.QUEUED,
+           stage='RECEIVED',
+           progress=0
+       )
+   print(f"Queued {docs.count()} documents for reindexing")
+   ```
+
+6. **Restart services**
+   ```bash
+   docker-compose up -d backend worker
+   ```
+
+7. **Monitor reindexing**
+   ```bash
+   docker logs -f docuchat-worker
+   ```
+
+---
+
+### Runbook: Keycloak User/Realm Management
+
+**When to use:** Adding users, updating realm settings, or rotating keys.
+
+#### Add a New User
+
+1. **Access Keycloak Admin Console**
+   - URL: `http://localhost:80/auth/admin`
+   - Login with admin credentials from `.env`
+
+2. **Select the `docuchat` realm** (top-left dropdown)
+
+3. **Create user**
+   - Navigate to Users → Add user
+   - Fill in username, email
+   - Click Save
+
+4. **Set password**
+   - Go to Credentials tab
+   - Set password, toggle "Temporary" off
+   - Click Set Password
+
+5. **Verify login**
+   ```bash
+   curl -X POST http://localhost/auth/realms/docuchat/protocol/openid-connect/token \
+     -d "grant_type=password" \
+     -d "client_id=docuchat-app" \
+     -d "username=newuser" \
+     -d "password=newpassword"
+   ```
+
+#### Export Realm Config (for backup/version control)
+
+```bash
+docker exec -it docuchat-keycloak /opt/keycloak/bin/kc.sh export \
+  --realm docuchat \
+  --dir /tmp/export
+
+docker cp docuchat-keycloak:/tmp/export/docuchat-realm.json ./infra/keycloak/realm-export.json
+```
+
+#### Rotate Keys (if compromised)
+
+1. Open Admin Console → Realm Settings → Keys
+2. Click "Rotate" for each key type (RS256, HS256)
+3. Restart backend to fetch new JWKS:
+   ```bash
+   docker restart docuchat-backend
+   ```
+
+**Note:** After key rotation, all existing tokens become invalid. Users must re-authenticate.

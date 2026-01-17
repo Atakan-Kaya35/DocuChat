@@ -67,6 +67,23 @@ export interface ChunkResponse {
   filename: string;
 }
 
+// Agent types
+export interface AgentTraceEntry {
+  type: 'plan' | 'tool_call' | 'final' | 'error';
+  tool?: string;
+  input?: Record<string, unknown>;
+  outputSummary?: string;
+  steps?: string[];
+  notes?: string;
+  error?: string;
+}
+
+export interface AgentResponse {
+  answer: string;
+  citations: Citation[];
+  trace?: AgentTraceEntry[];
+}
+
 class ApiClient {
   private getAccessToken: (() => string | null) | null = null;
 
@@ -214,6 +231,22 @@ class ApiClient {
    */
   async getChunk(docId: string, chunkIndex: number): Promise<ChunkResponse> {
     return this.request<ChunkResponse>(`/docs/${docId}/chunks/${chunkIndex}`);
+  }
+
+  /**
+   * POST /api/agent/run - Execute bounded agent with tools
+   */
+  async runAgent(question: string, options?: {
+    returnTrace?: boolean;
+  }): Promise<AgentResponse> {
+    return this.request<AgentResponse>('/agent/run', {
+      method: 'POST',
+      body: JSON.stringify({
+        question,
+        mode: 'agent',
+        returnTrace: options?.returnTrace ?? false,
+      }),
+    });
   }
 }
 

@@ -63,7 +63,7 @@ services:
         condition: service_started
         # TODO: Change to service_healthy once ollama healthcheck is verified
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health/', timeout=5)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/readyz', timeout=5)"]
       interval: 10s
       timeout: 10s
       retries: 10
@@ -91,6 +91,12 @@ services:
         condition: service_healthy
       ollama:
         condition: service_started
+    healthcheck:
+      test: ["CMD", "sh", "-c", "test -f /tmp/worker_heartbeat && find /tmp/worker_heartbeat -mmin -1 | grep -q ."]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     networks:
       - docuchat_net
     restart: unless-stopped

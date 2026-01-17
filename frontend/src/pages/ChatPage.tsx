@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from 'react-oidc-context';
-import { apiClient, AskResponse, Citation, ChunkResponse } from '../api';
+import { apiClient, AskResponse, AgentResponse, AgentTraceEntry, Citation, ChunkResponse } from '../api';
 
 interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
   citations?: Citation[];
+  trace?: AgentTraceEntry[];  // Agent mode trace
   timestamp: Date;
 }
 
@@ -23,6 +24,10 @@ export default function ChatPage() {
   const [input, setInput] = useState('');
   const [chatState, setChatState] = useState<ChatState>('idle');
   const [error, setError] = useState<string | null>(null);
+  
+  // Agent mode toggle
+  const [agentMode, setAgentMode] = useState(false);
+  const [expandedTraces, setExpandedTraces] = useState<Set<string>>(new Set());
   
   // Modal state for viewing chunks
   const [selectedChunk, setSelectedChunk] = useState<ChunkResponse | null>(null);
@@ -79,17 +84,33 @@ export default function ChatPage() {
       // Show thinking state
       setChatState('thinking');
       
-      // Call the API
-      const response: AskResponse = await apiClient.ask(question);
-
-      // Add assistant message
-      const assistantMessage: Message = {
-        id: crypto.randomUUID(),
-        role: 'assistant',
-        content: response.answer,
-        citations: response.citations,
-        timestamp: new Date(),
-      };
+      let assistantMessage: Message;
+      
+      if (agentMode) {
+        // Call Agent API
+        const response: AgentResponse = await apiClient.runAgent(question, { returnTrace: true });
+        
+        assistantMessage = {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: response.answer,
+          citations: response.citations,
+          trace: response.trace,
+          timestamp: new Date(),
+        };
+      } else {
+        // Call standard RAG API
+        const response: AskResponse = await apiClient.ask(question);
+        
+        assistantMessage = {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: response.answer,
+          citations: response.citations,
+          timestamp: new Date(),
+        };
+      }
+      
       setMessages(prev => [...prev, assistantMessage]);
       
     } catch (err: unknown) {
@@ -130,6 +151,19 @@ export default function ChatPage() {
     setSelectedChunk(null);
   }, []);
 
+  // Toggle trace visibility
+  const toggleTrace = useCallback((messageId: string) => {
+    setExpandedTraces(prev => {
+      const next = new Set(prev);
+      if (next.has(messageId)) {
+        next.delete(messageId);
+      } else {
+        next.add(messageId);
+      }
+      return next;
+    });
+  }, []);
+
   // Handle key press
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -153,6 +187,17 @@ export default function ChatPage() {
       <header style={styles.header}>
         <h1 style={styles.title}>DocuChat</h1>
         <div style={styles.headerActions}>
+          {/* Agent Mode Toggle */}
+          <label style={styles.toggleLabel}>
+            <input 
+              type="checkbox"
+              checked={agentMode}
+              onChange={(e) => setAgentMode(e.target.checked)}
+              style={styles.toggleCheckbox}
+            />
+            <span style={styles.toggleSlider} />
+            <span style={styles.toggleText}>Agent Mode</span>
+          </label>
           <button style={styles.navButton} onClick={() => navigate('/')}>
             Documents
           </button>
@@ -210,6 +255,49 @@ export default function ChatPage() {
                           </div>
                         </button>
                       ))}
+                    </div>
+                  )}
+                  
+                  {/* Agent Mode Trace Accordion */}
+                  {message.trace && message.trace.length > 0 && (
+                    <div style={styles.traceContainer}>
+                      <button 
+                        style={styles.traceToggle}
+                        onClick={() => toggleTrace(message.id)}
+                      >
+                        {expandedTraces.has(message.id) ? '▼' : '▶'} Show Steps ({message.trace.length})
+                      </button>
+                      {expandedTraces.has(message.id) && (
+                        <div style={styles.traceList}>
+                          {message.trace.map((entry, idx) => (
+                            <div key={idx} style={styles.traceEntry}>
+                              <span style={styles.traceType}>{entry.type.toUpperCase()}</span>
+                              {entry.tool && <span style={styles.traceTool}>{entry.tool}</span>}
+                              {entry.steps && (
+                                <ul style={styles.traceSteps}>
+                                  {entry.steps.map((step, i) => (
+                                    <li key={i}>{step}</li>
+                                  ))}
+                                </ul>
+                              )}
+                              {entry.input && (
+                                <code style={styles.traceInput}>
+                                  {JSON.stringify(entry.input)}
+                                </code>
+                              )}
+                              {entry.outputSummary && (
+                                <div style={styles.traceOutput}>{entry.outputSummary}</div>
+                              )}
+                              {entry.notes && (
+                                <div style={styles.traceNotes}>{entry.notes}</div>
+                              )}
+                              {entry.error && (
+                                <div style={styles.traceError}>{entry.error}</div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
                   
@@ -309,6 +397,32 @@ const styles: Record<string, React.CSSProperties> = {
   headerActions: {
     display: 'flex',
     gap: '0.5rem',
+  },
+  toggleLabel: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.5rem',
+    cursor: 'pointer',
+    userSelect: 'none',
+    padding: '0.25rem 0.5rem',
+    background: '#f0f0f0',
+    borderRadius: '6px',
+  },
+  toggleCheckbox: {
+    display: 'none',
+  },
+  toggleSlider: {
+    width: '36px',
+    height: '20px',
+    background: '#ccc',
+    borderRadius: '10px',
+    position: 'relative',
+    transition: 'background 0.2s',
+  },
+  toggleText: {
+    fontSize: '0.875rem',
+    fontWeight: 500,
+    color: '#333',
   },
   navButton: {
     padding: '0.5rem 1rem',
@@ -514,5 +628,83 @@ const styles: Record<string, React.CSSProperties> = {
     background: '#f8f9fa',
     padding: '1rem',
     borderRadius: '6px',
+  },
+  // Trace styles for Agent Mode
+  traceContainer: {
+    marginTop: '1rem',
+    paddingTop: '1rem',
+    borderTop: '1px solid #e0e0e0',
+  },
+  traceToggle: {
+    background: 'none',
+    border: '1px solid #ccc',
+    borderRadius: '4px',
+    padding: '0.5rem 1rem',
+    cursor: 'pointer',
+    fontSize: '0.75rem',
+    color: '#666',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.5rem',
+  },
+  traceList: {
+    marginTop: '0.75rem',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '0.5rem',
+  },
+  traceEntry: {
+    padding: '0.75rem',
+    background: '#f8f9fa',
+    borderRadius: '6px',
+    fontSize: '0.8rem',
+    borderLeft: '3px solid #0066cc',
+  },
+  traceType: {
+    fontWeight: 'bold',
+    color: '#0066cc',
+    marginRight: '0.5rem',
+    textTransform: 'uppercase',
+    fontSize: '0.7rem',
+  },
+  traceTool: {
+    background: '#e0e0e0',
+    padding: '0.15rem 0.4rem',
+    borderRadius: '3px',
+    fontSize: '0.7rem',
+    fontFamily: 'monospace',
+  },
+  traceSteps: {
+    margin: '0.5rem 0 0 1rem',
+    padding: 0,
+    fontSize: '0.8rem',
+    color: '#444',
+  },
+  traceInput: {
+    display: 'block',
+    marginTop: '0.25rem',
+    fontSize: '0.7rem',
+    color: '#666',
+    background: '#e8e8e8',
+    padding: '0.25rem 0.5rem',
+    borderRadius: '3px',
+    wordBreak: 'break-all',
+  },
+  traceOutput: {
+    marginTop: '0.25rem',
+    fontSize: '0.75rem',
+    color: '#28a745',
+  },
+  traceNotes: {
+    marginTop: '0.25rem',
+    fontSize: '0.75rem',
+    color: '#666',
+    fontStyle: 'italic',
+  },
+  traceError: {
+    marginTop: '0.25rem',
+    fontSize: '0.75rem',
+    color: '#dc3545',
+    fontWeight: 'bold',
   },
 };
