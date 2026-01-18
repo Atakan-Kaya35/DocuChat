@@ -2,6 +2,7 @@
 Agent API views.
 
 Provides the bounded agent endpoint for multi-step question answering.
+Uses executor_v2 with validation gates and constraint enforcement.
 """
 import json
 import logging
@@ -14,9 +15,11 @@ from django.utils.decorators import method_decorator
 from apps.authn.middleware import auth_required
 from apps.authn.ratelimit import rate_limited, check_ask_rate_limit
 from apps.authn.audit import log_audit_from_request, AuditEvent
-from apps.agent.executor import (
-    run_agent, 
-    run_agent_streaming, 
+
+# Use executor_v2 with validation gates
+from apps.agent.executor_v2 import (
+    run_agent_v2 as run_agent, 
+    run_agent_v2_streaming as run_agent_streaming, 
     AgentError, 
     AgentResult,
     TraceEntry,

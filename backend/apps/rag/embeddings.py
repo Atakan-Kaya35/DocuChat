@@ -77,9 +77,10 @@ def embed_query(query: str) -> List[float]:
     """
     ollama_url = getattr(settings, 'OLLAMA_BASE_URL', 'http://ollama:11434')
     embedding_model = getattr(settings, 'OLLAMA_EMBED_MODEL', 'nomic-embed-text')
+    embed_timeout = getattr(settings, 'OLLAMA_EMBED_TIMEOUT', 120)  # 2 min default
     
     try:
-        with httpx.Client(timeout=30.0) as client:
+        with httpx.Client(timeout=float(embed_timeout)) as client:
             # Use /api/embeddings (same as indexing pipeline)
             response = client.post(
                 f"{ollama_url}/api/embeddings",

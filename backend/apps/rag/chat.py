@@ -109,17 +109,18 @@ def call_ollama_chat(
     """
     ollama_url = getattr(settings, 'OLLAMA_BASE_URL', 'http://ollama:11434')
     chat_model = getattr(settings, 'OLLAMA_CHAT_MODEL', 'llama3.2')
+    chat_timeout = getattr(settings, 'OLLAMA_CHAT_TIMEOUT', 600)  # 10 min default
     
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": question},
     ]
     
-    logger.info(f"Calling Ollama chat with model={chat_model}, temp={temperature}")
+    logger.info(f"Calling Ollama chat with model={chat_model}, temp={temperature}, timeout={chat_timeout}s")
     logger.debug(f"System prompt length: {len(system_prompt)} chars")
     
     try:
-        with httpx.Client(timeout=120.0) as client:  # Long timeout for LLM
+        with httpx.Client(timeout=float(chat_timeout)) as client:
             response = client.post(
                 f"{ollama_url}/api/chat",
                 json={
