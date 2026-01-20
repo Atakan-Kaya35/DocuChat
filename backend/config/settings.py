@@ -156,6 +156,11 @@ OLLAMA_PLAN_TIMEOUT = int(os.getenv('OLLAMA_PLAN_TIMEOUT', '300'))  # 5 min
 OLLAMA_CHAT_TIMEOUT = int(os.getenv('OLLAMA_CHAT_TIMEOUT', '600'))  # 10 min
 OLLAMA_EMBED_TIMEOUT = int(os.getenv('OLLAMA_EMBED_TIMEOUT', '120'))  # 2 min
 
+# Query Refinement Feature (optional)
+# When enabled at server level, the refine_prompt toggle in UI will work
+# Set to False to disable query refinement server-wide
+ENABLE_QUERY_REFINEMENT = os.getenv('ENABLE_QUERY_REFINEMENT', 'True').lower() in ('true', '1', 'yes')
+
 # =============================================================================
 # File Upload Configuration
 # =============================================================================

@@ -15,6 +15,7 @@ from django.utils.decorators import method_decorator
 from apps.authn.middleware import auth_required
 from apps.authn.ratelimit import rate_limited, check_ask_rate_limit
 from apps.authn.audit import log_audit_from_request, AuditEvent
+from apps.rag.query_rewriter import rewrite_query
 
 # Use executor_v2 with validation gates
 from apps.agent.executor_v2 import (
@@ -63,6 +64,11 @@ class AgentRunView(View):
         question = body.get("question", "")
         mode = body.get("mode", "agent")
         return_trace = body.get("returnTrace", False)
+        refine_prompt = body.get("refine_prompt", False)
+        
+        # Validate refine_prompt
+        if not isinstance(refine_prompt, bool):
+            refine_prompt = False
         
         # Validate question
         if not question or not question.strip():
@@ -94,8 +100,22 @@ class AgentRunView(View):
             return JsonResponse({"error": "Invalid token: missing sub"}, status=401)
         
         try:
-            # Execute agent
-            result = run_agent(question, user_id)
+            # Query rewriting (optional step)
+            rewritten_query = None
+            retrieval_question = question  # Default to original
+            
+            if refine_prompt:
+                logger.info("Agent: Query refinement enabled, calling rewriter")
+                rewrite_result = rewrite_query(question)
+                if rewrite_result:
+                    rewritten_query = rewrite_result.rewritten_query
+                    retrieval_question = rewritten_query
+                    logger.info(f"Agent: Query refined: '{retrieval_question[:100]}...'")
+                else:
+                    logger.info("Agent: Query refinement failed, using original question")
+            
+            # Execute agent (use retrieval_question for search, original for final answer)
+            result = run_agent(retrieval_question, user_id)
             
             # Audit log
             log_audit_from_request(
@@ -110,6 +130,8 @@ class AgentRunView(View):
             
             # Build response
             response_data = result.to_dict(include_trace=return_trace)
+            if rewritten_query:
+                response_data["rewritten_query"] = rewritten_query
             
             return JsonResponse(response_data)
             
@@ -159,6 +181,11 @@ class AgentStreamView(View):
             return JsonResponse({"error": "Invalid JSON"}, status=400)
         
         question = body.get("question", "")
+        refine_prompt = body.get("refine_prompt", False)
+        
+        # Validate refine_prompt
+        if not isinstance(refine_prompt, bool):
+            refine_prompt = False
         
         # Validate question
         if not question or not question.strip():
@@ -187,8 +214,22 @@ class AgentStreamView(View):
             tool_calls_count = 0
             final_trace = []
             
+            # Query rewriting (optional step)
+            rewritten_query = None
+            retrieval_question = question  # Default to original
+            
+            if refine_prompt:
+                logger.info("Agent stream: Query refinement enabled, calling rewriter")
+                rewrite_result = rewrite_query(question)
+                if rewrite_result:
+                    rewritten_query = rewrite_result.rewritten_query
+                    retrieval_question = rewritten_query
+                    logger.info(f"Agent stream: Query refined: '{retrieval_question[:100]}...'")
+                else:
+                    logger.info("Agent stream: Query refinement failed, using original question")
+            
             try:
-                for item in run_agent_streaming(question, user_id):
+                for item in run_agent_streaming(retrieval_question, user_id):
                     if isinstance(item, TraceEntry):
                         # Stream trace entry
                         final_trace.append(item)
@@ -201,6 +242,10 @@ class AgentStreamView(View):
                     elif isinstance(item, AgentResult):
                         # Final result
                         result_data = item.to_dict(include_trace=True)
+                        
+                        # Add rewritten_query if refinement was used
+                        if rewritten_query:
+                            result_data["rewritten_query"] = rewritten_query
                         
                         # Audit log
                         log_audit_from_request(

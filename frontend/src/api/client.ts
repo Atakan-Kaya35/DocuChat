@@ -57,6 +57,7 @@ export interface AskResponse {
   answer: string;
   citations: Citation[];
   model: string;
+  rewritten_query?: string;  // Present when refine_prompt was enabled
 }
 
 export interface ChunkResponse {
@@ -82,6 +83,7 @@ export interface AgentResponse {
   answer: string;
   citations: Citation[];
   trace?: AgentTraceEntry[];
+  rewritten_query?: string;  // Present when refine_prompt was enabled
 }
 
 class ApiClient {
@@ -109,7 +111,7 @@ class ApiClient {
     options: RequestInit = {}
   ): Promise<T> {
     const url = `${API_BASE_URL}${endpoint}`;
-    
+
     const headers: HeadersInit = {
       'Content-Type': 'application/json',
       ...options.headers,
@@ -148,7 +150,7 @@ class ApiClient {
     formData: FormData
   ): Promise<T> {
     const url = `${API_BASE_URL}${endpoint}`;
-    
+
     const headers: HeadersInit = {};
 
     // Add Authorization header if we have a token
@@ -208,12 +210,28 @@ class ApiClient {
   }
 
   /**
+   * POST /api/rag/rewrite - Rewrite a query for better retrieval
+   * Called separately to show refined query immediately
+   */
+  async rewriteQuery(question: string): Promise<{
+    rewritten_query: string;
+    original_query: string;
+    fallback?: boolean;
+  }> {
+    return this.request('/rag/rewrite', {
+      method: 'POST',
+      body: JSON.stringify({ question }),
+    });
+  }
+
+  /**
    * POST /api/rag/ask - Ask a question about documents
    */
   async ask(question: string, options?: {
     topK?: number;
     temperature?: number;
     maxTokens?: number;
+    refinePrompt?: boolean;
   }): Promise<AskResponse> {
     return this.request<AskResponse>('/rag/ask', {
       method: 'POST',
@@ -222,6 +240,7 @@ class ApiClient {
         topK: options?.topK,
         temperature: options?.temperature,
         maxTokens: options?.maxTokens,
+        refine_prompt: options?.refinePrompt,
       }),
     });
   }
@@ -238,6 +257,7 @@ class ApiClient {
    */
   async runAgent(question: string, options?: {
     returnTrace?: boolean;
+    refinePrompt?: boolean;
   }): Promise<AgentResponse> {
     return this.request<AgentResponse>('/agent/run', {
       method: 'POST',
@@ -245,6 +265,7 @@ class ApiClient {
         question,
         mode: 'agent',
         returnTrace: options?.returnTrace ?? false,
+        refine_prompt: options?.refinePrompt,
       }),
     });
   }
@@ -256,10 +277,13 @@ class ApiClient {
    */
   async *runAgentStream(
     question: string,
+    options?: {
+      refinePrompt?: boolean;
+    },
     signal?: AbortSignal
   ): AsyncGenerator<AgentTraceEntry | AgentResponse, void, unknown> {
     const url = `${API_BASE_URL}/agent/stream`;
-    
+
     const headers: HeadersInit = {
       'Content-Type': 'application/json',
     };
@@ -274,7 +298,10 @@ class ApiClient {
     const response = await fetch(url, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ question }),
+      body: JSON.stringify({
+        question,
+        refine_prompt: options?.refinePrompt,
+      }),
       signal,
     });
 
@@ -293,18 +320,18 @@ class ApiClient {
 
     while (true) {
       const { done, value } = await reader.read();
-      
+
       if (done) break;
-      
+
       buffer += decoder.decode(value, { stream: true });
-      
+
       // Parse SSE events from buffer
       const lines = buffer.split('\n');
       buffer = lines.pop() || ''; // Keep incomplete line in buffer
-      
+
       let eventType = '';
       let eventData = '';
-      
+
       for (const line of lines) {
         if (line.startsWith('event: ')) {
           eventType = line.slice(7).trim();
@@ -314,7 +341,7 @@ class ApiClient {
           // End of event
           try {
             const parsed = JSON.parse(eventData);
-            
+
             if (eventType === 'trace') {
               yield parsed as AgentTraceEntry;
             } else if (eventType === 'complete') {
@@ -326,7 +353,7 @@ class ApiClient {
             if ((e as { error?: string }).error) throw e;
             console.error('Failed to parse SSE event:', eventData);
           }
-          
+
           eventType = '';
           eventData = '';
         }

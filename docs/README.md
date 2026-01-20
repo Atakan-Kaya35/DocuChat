@@ -157,6 +157,28 @@ docker compose up
 
 ---
 
+## Refine Prompt (Query Rewriting)
+
+When enabled via the "Refine" toggle in the chat UI, DocuChat uses an LLM pre-pass to rewrite your question into a more retrieval-friendly form before searching the document index.
+
+### What it does
+- Expands abbreviations and clarifies vague terms
+- Extracts keywords and named entities
+- Generates alternate search queries
+- Detects constraints like time ranges or document scope
+- The refined query is displayed in your message bubble
+
+### Fallback behavior
+If rewriting fails (timeout, parse error, LLM unavailable), the system **silently falls back** to your original question. No user action required.
+
+### Why it's safe
+- Feature is **OFF by default**
+- Original question is always used for final answer generation
+- Only affects the retrieval step
+- Can be disabled server-wide via `ENABLE_QUERY_REFINEMENT=false`
+
+---
+
 ## Next Steps
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) - System design and data flow

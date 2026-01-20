@@ -9,6 +9,7 @@ interface Message {
   content: string;
   citations?: Citation[];
   trace?: AgentTraceEntry[];  // Agent mode trace
+  rewrittenQuery?: string;    // Refined query (shown in user bubble when enabled)
   timestamp: Date;
 }
 
@@ -24,18 +25,21 @@ export default function ChatPage() {
   const [input, setInput] = useState('');
   const [chatState, setChatState] = useState<ChatState>('idle');
   const [error, setError] = useState<string | null>(null);
-  
+
   // Agent mode toggle
   const [agentMode, setAgentMode] = useState(false);
   const [expandedTraces, setExpandedTraces] = useState<Set<string>>(new Set());
-  
+
+  // Refine prompt toggle (query rewriting)
+  const [refinePrompt, setRefinePrompt] = useState(false);
+
   // Streaming agent thinking state
   const [streamingSteps, setStreamingSteps] = useState<AgentTraceEntry[]>([]);
-  
+
   // Modal state for viewing chunks
   const [selectedChunk, setSelectedChunk] = useState<ChunkResponse | null>(null);
   const [loadingChunk, setLoadingChunk] = useState(false);
-  
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -66,11 +70,14 @@ export default function ChatPage() {
     const question = input.trim();
     if (!question || chatState !== 'idle') return;
 
-    // Add user message
+    // Add user message (will be updated with rewritten query if refinement is used)
+    const userMessageId = crypto.randomUUID();
     const userMessage: Message = {
-      id: crypto.randomUUID(),
+      id: userMessageId,
       role: 'user',
       content: question,
+      // Show "Refining..." placeholder if refine prompt is enabled
+      rewrittenQuery: refinePrompt ? 'Refining...' : undefined,
       timestamp: new Date(),
     };
     setMessages(prev => [...prev, userMessage]);
@@ -81,21 +88,43 @@ export default function ChatPage() {
     try {
       // Show retrieving state
       setChatState('retrieving');
-      
-      // Small delay to show retrieving state
-      await new Promise(resolve => setTimeout(resolve, 300));
-      
+
+      let rewrittenQuery: string | undefined;
+
+      // Step 1: If refine prompt is enabled, call rewrite API first (shows immediately)
+      if (refinePrompt) {
+        try {
+          const rewriteResult = await apiClient.rewriteQuery(question);
+          rewrittenQuery = rewriteResult.rewritten_query;
+
+          // Update user message with refined query IMMEDIATELY (before answer)
+          setMessages(prev => prev.map(msg =>
+            msg.id === userMessageId
+              ? { ...msg, rewrittenQuery }
+              : msg
+          ));
+        } catch (rewriteErr) {
+          console.warn('Query rewrite failed, using original:', rewriteErr);
+          // Remove "Refining..." placeholder on failure
+          setMessages(prev => prev.map(msg =>
+            msg.id === userMessageId
+              ? { ...msg, rewrittenQuery: undefined }
+              : msg
+          ));
+        }
+      }
+
       // Show thinking state
       setChatState('thinking');
-      
+
       let assistantMessage: Message;
-      
+
       if (agentMode) {
         // Use streaming Agent API for real-time updates
         const collectedTrace: AgentTraceEntry[] = [];
         let finalResponse: AgentResponse | null = null;
-        
-        for await (const event of apiClient.runAgentStream(question)) {
+
+        for await (const event of apiClient.runAgentStream(question, { refinePrompt })) {
           // Check if it's a trace entry or final response
           if ('type' in event && !('answer' in event)) {
             // It's a trace entry
@@ -107,7 +136,7 @@ export default function ChatPage() {
             finalResponse = event as AgentResponse;
           }
         }
-        
+
         if (finalResponse) {
           assistantMessage = {
             id: crypto.randomUUID(),
@@ -121,9 +150,9 @@ export default function ChatPage() {
           throw new Error('No response received from agent');
         }
       } else {
-        // Call standard RAG API
+        // Call standard RAG API (no need to pass refinePrompt since rewrite was done separately)
         const response: AskResponse = await apiClient.ask(question);
-        
+
         assistantMessage = {
           id: crypto.randomUUID(),
           role: 'assistant',
@@ -132,15 +161,16 @@ export default function ChatPage() {
           timestamp: new Date(),
         };
       }
-      
+
+      // Add assistant message
       setMessages(prev => [...prev, assistantMessage]);
       setStreamingSteps([]); // Clear streaming steps after message is added
-      
+
     } catch (err: unknown) {
       console.error('Ask failed:', err);
       const errorMessage = (err as { error?: string })?.error || 'Failed to get answer';
       setError(errorMessage);
-      
+
       // Add error message
       const errorMsg: Message = {
         id: crypto.randomUUID(),
@@ -154,7 +184,7 @@ export default function ChatPage() {
       setStreamingSteps([]);
       inputRef.current?.focus();
     }
-  }, [input, chatState, agentMode]);
+  }, [input, chatState, agentMode, refinePrompt]);
 
   // Handle citation click
   const handleCitationClick = useCallback(async (citation: Citation) => {
@@ -211,6 +241,26 @@ export default function ChatPage() {
       <header style={styles.header}>
         <h1 style={styles.title}>DocuChat</h1>
         <div style={styles.headerActions}>
+          {/* Refine Prompt Toggle */}
+          <button
+            type="button"
+            onClick={() => setRefinePrompt(!refinePrompt)}
+            style={{
+              ...styles.toggleButton,
+              background: refinePrompt ? '#9b59b6' : '#ccc',
+            }}
+            aria-pressed={refinePrompt}
+            title={refinePrompt ? 'Refine Prompt ON - Query will be rewritten for better retrieval' : 'Refine Prompt OFF - Using original query'}
+          >
+            <span
+              style={{
+                ...styles.toggleKnob,
+                transform: refinePrompt ? 'translateX(16px)' : 'translateX(0)',
+              }}
+            />
+          </button>
+          <span style={styles.toggleText}>{refinePrompt ? '✨ Refine' : 'Refine'}</span>
+
           {/* Agent Mode Toggle */}
           <button
             type="button"
@@ -233,8 +283,8 @@ export default function ChatPage() {
           <button style={styles.navButton} onClick={() => navigate('/')}>
             Documents
           </button>
-          <button 
-            style={styles.logoutButton} 
+          <button
+            style={styles.logoutButton}
             onClick={() => auth.signoutRedirect()}
           >
             Logout
@@ -252,21 +302,29 @@ export default function ChatPage() {
         ) : (
           <div style={styles.messagesList}>
             {messages.map((message) => (
-              <div 
-                key={message.id} 
+              <div
+                key={message.id}
                 style={{
                   ...styles.messageWrapper,
                   justifyContent: message.role === 'user' ? 'flex-end' : 'flex-start',
                 }}
               >
-                <div 
+                <div
                   style={{
                     ...styles.message,
                     ...(message.role === 'user' ? styles.userMessage : styles.assistantMessage),
                   }}
                 >
-                  <div style={styles.messageContent}>{message.content}</div>
-                  
+                  <div style={styles.messageContent}>
+                    {message.content}
+                    {/* Show rewritten query below user message if present */}
+                    {message.role === 'user' && message.rewrittenQuery && (
+                      <div style={styles.rewrittenQuery}>
+                        ✨ Refined: {message.rewrittenQuery}
+                      </div>
+                    )}
+                  </div>
+
                   {/* Citations */}
                   {message.citations && message.citations.length > 0 && (
                     <div style={styles.citationsContainer}>
@@ -289,11 +347,11 @@ export default function ChatPage() {
                       ))}
                     </div>
                   )}
-                  
+
                   {/* Agent Mode Trace Accordion */}
                   {message.trace && message.trace.length > 0 && (
                     <div style={styles.traceContainer}>
-                      <button 
+                      <button
                         style={styles.traceToggle}
                         onClick={() => toggleTrace(message.id)}
                       >
@@ -332,15 +390,15 @@ export default function ChatPage() {
                       )}
                     </div>
                   )}
-                  
+
                   {/* No sources state */}
-                  {message.role === 'assistant' && 
-                   message.citations !== undefined && 
-                   message.citations.length === 0 && (
-                    <div style={styles.noSources}>
-                      No relevant chunks found in your documents.
-                    </div>
-                  )}
+                  {message.role === 'assistant' &&
+                    message.citations !== undefined &&
+                    message.citations.length === 0 && (
+                      <div style={styles.noSources}>
+                        No relevant chunks found in your documents.
+                      </div>
+                    )}
                 </div>
               </div>
             ))}
@@ -567,6 +625,14 @@ const styles: Record<string, React.CSSProperties> = {
   messageContent: {
     whiteSpace: 'pre-wrap',
     lineHeight: 1.5,
+  },
+  rewrittenQuery: {
+    marginTop: '0.5rem',
+    paddingTop: '0.5rem',
+    borderTop: '1px solid rgba(255,255,255,0.3)',
+    fontSize: '0.8rem',
+    opacity: 0.9,
+    fontStyle: 'italic',
   },
   citationsContainer: {
     marginTop: '1rem',

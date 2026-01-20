@@ -24,6 +24,7 @@ from apps.rag.embeddings import (
 )
 from apps.rag.retrieval import retrieve_for_query, DEFAULT_TOP_K
 from apps.rag.chat import generate_answer, ChatError, DEFAULT_TEMPERATURE, DEFAULT_MAX_TOKENS
+from apps.rag.query_rewriter import rewrite_query
 from apps.indexing.retry import (
     retry_with_backoff,
     GENERATION_RETRY_CONFIG,
@@ -116,6 +117,58 @@ class RetrieveView(View):
 
 @method_decorator(csrf_exempt, name='dispatch')
 @method_decorator(auth_required, name='dispatch')
+class RewriteView(View):
+    """
+    POST /api/rag/rewrite
+    
+    Rewrite a query for better retrieval. Called by frontend to show
+    refined query immediately before the full RAG call.
+    
+    Request body:
+        {
+            "question": "how do i fix the login bug"
+        }
+    
+    Response:
+        {
+            "rewritten_query": "troubleshoot authentication login failure error",
+            "original_query": "how do i fix the login bug"
+        }
+    """
+    
+    def post(self, request):
+        try:
+            body = json.loads(request.body)
+        except json.JSONDecodeError:
+            return JsonResponse({"error": "Invalid JSON"}, status=400)
+        
+        raw_question = body.get("question", "")
+        
+        # Normalize question
+        try:
+            question = normalize_query(raw_question)
+        except QueryValidationError as e:
+            return JsonResponse({"error": str(e)}, status=400)
+        
+        # Call query rewriter
+        rewrite_result = rewrite_query(question)
+        
+        if rewrite_result:
+            return JsonResponse({
+                "rewritten_query": rewrite_result.rewritten_query,
+                "original_query": question,
+            })
+        else:
+            # Fallback - return original as both
+            return JsonResponse({
+                "rewritten_query": question,
+                "original_query": question,
+                "fallback": True,
+            })
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+@method_decorator(auth_required, name='dispatch')
 @method_decorator(rate_limited(check_ask_rate_limit), name='dispatch')
 class AskView(View):
     """
@@ -159,6 +212,11 @@ class AskView(View):
         top_k = body.get("topK", DEFAULT_TOP_K)
         temperature = body.get("temperature", DEFAULT_TEMPERATURE)
         max_tokens = body.get("maxTokens", DEFAULT_MAX_TOKENS)
+        refine_prompt = body.get("refine_prompt", False)
+        
+        # Validate refine_prompt
+        if not isinstance(refine_prompt, bool):
+            refine_prompt = False
         
         # Validate top_k
         if not isinstance(top_k, int) or top_k < 1 or top_k > 20:
@@ -192,9 +250,23 @@ class AskView(View):
         if not user_id:
             return JsonResponse({"error": "Invalid token: missing sub"}, status=401)
         
-        # Generate query embedding
+        # Query rewriting (optional step)
+        rewritten_query = None
+        retrieval_query = question  # Default to original
+        
+        if refine_prompt:
+            logger.info("Query refinement enabled, calling rewriter")
+            rewrite_result = rewrite_query(question)
+            if rewrite_result:
+                rewritten_query = rewrite_result.rewritten_query
+                retrieval_query = rewritten_query
+                logger.info(f"Query refined: '{retrieval_query[:100]}...'")
+            else:
+                logger.info("Query refinement failed, using original question")
+        
+        # Generate query embedding (use retrieval_query for embedding)
         try:
-            query_embedding = embed_query(question)
+            query_embedding = embed_query(retrieval_query)
             logger.info(f"Query embedding generated: {len(query_embedding)} dimensions")
         except EmbeddingError as e:
             logger.error(f"Embedding failed: {e}")
@@ -203,9 +275,9 @@ class AskView(View):
                 status=503
             )
         
-        # Retrieve relevant chunks
+        # Retrieve relevant chunks (use retrieval_query)
         retrieval_result = retrieve_for_query(
-            query=question,
+            query=retrieval_query,
             query_embedding=query_embedding,
             user_id=user_id,
             top_k=top_k,
@@ -256,5 +328,10 @@ class AskView(View):
             citation_count=len(chat_response.citations)
         )
         
-        return JsonResponse(chat_response.to_dict())
+        # Build response with optional rewritten_query for frontend display
+        response_data = chat_response.to_dict()
+        if rewritten_query:
+            response_data["rewritten_query"] = rewritten_query
+        
+        return JsonResponse(response_data)
 
