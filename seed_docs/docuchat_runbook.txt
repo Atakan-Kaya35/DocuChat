@@ -1,0 +1,21 @@
+# DocuChat Operations Runbook (v1)
+
+## Reindex a document (v1 procedure)
+1. Set documents.status = 'QUEUED'.
+2. Insert a new row into index_jobs with status='QUEUED', stage='RECEIVED'.
+3. Worker will pick it up automatically.
+4. If doc_chunks already exist, DO NOT delete them; the unique constraint (document_id, chunk_index) prevents duplicates.
+5. If embedding model changes, reindex is recommended but not strictly required for small changes.
+
+## Delete a document (v1 procedure)
+1. Delete row from documents.
+2. Delete file from disk.
+3. Leave index_jobs and doc_chunks for later cleanup (cron job).
+
+## Rate limits (v1)
+- /api/docs/upload: 10 per minute per user.
+- /api/chat/ask: 60 per minute per user.
+
+## Retry policy (v1)
+- Embeddings: 5 attempts, exponential backoff 1s, 2s, 4s, 8s, 16s.
+- Generation: 3 attempts, fixed backoff 2s.

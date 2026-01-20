@@ -4,6 +4,16 @@ This document defines the REST API contracts for DocuChat.
 
 ---
 
+> [!NOTE]
+> **API Path Convention:** The spec originally defined `POST /api/chat/ask` for the RAG endpoint. During implementation, this was changed to `POST /api/rag/ask` for clearer naming semantics:
+> - `/api/rag/*` — Retrieval-Augmented Generation (retrieve + answer)
+> - `/api/agent/*` — Multi-step agent with planning and tools
+> - `/api/docs/*` — Document management (CRUD)
+>
+> This separation makes API organization clearer and distinguishes the simpler RAG flow from the more complex agent flow. The functionality is identical to what the spec describes for `/api/chat/ask`.
+
+---
+
 ## Table of Contents
 
 1. [Base Conventions](#base-conventions)

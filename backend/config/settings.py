@@ -148,7 +148,7 @@ CHANNEL_LAYERS = {
 # =============================================================================
 OLLAMA_BASE_URL = os.getenv('OLLAMA_BASE_URL', 'http://ollama:11434')
 OLLAMA_EMBED_MODEL = os.getenv('OLLAMA_EMBED_MODEL', 'nomic-embed-text')
-OLLAMA_CHAT_MODEL = os.getenv('OLLAMA_CHAT_MODEL', 'llama3.2')
+OLLAMA_CHAT_MODEL = os.getenv('OLLAMA_CHAT_MODEL', 'gemma:7b')
 
 # LLM Timeout settings (in seconds) - increase for slower hardware
 # Default: 5 minutes for planning, 10 minutes for chat/agent
