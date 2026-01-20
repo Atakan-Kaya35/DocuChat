@@ -59,11 +59,10 @@ services:
         condition: service_healthy
       keycloak:
         condition: service_healthy
-      ollama:
-        condition: service_started
-        # TODO: Change to service_healthy once ollama healthcheck is verified
+      ollama-init:
+        condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health/', timeout=5)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/readyz', timeout=5)"]
       interval: 10s
       timeout: 10s
       retries: 10
@@ -89,8 +88,14 @@ services:
     depends_on:
       backend:
         condition: service_healthy
-      ollama:
-        condition: service_started
+      ollama-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "sh", "-c", "test -f /tmp/worker_heartbeat && find /tmp/worker_heartbeat -mmin -1 | grep -q ."]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     networks:
       - docuchat_net
     restart: unless-stopped
@@ -188,16 +193,40 @@ services:
     volumes:
       # Bind mount to local folder - models persist even if volume is deleted
       - ./infra/ollama/models:/root/.ollama
-    # TODO: Verify healthcheck endpoint works with ollama
-    # healthcheck:
-    #   test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
-    #   interval: 30s
-    #   timeout: 10s
-    #   retries: 3
-    #   start_period: 30s
+    healthcheck:
+      # Use ollama CLI to verify server is ready
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 600s
+      retries: 5
+      start_period: 10s
     networks:
       - docuchat_net
     restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # OLLAMA-INIT - Model Puller & Warmup (runs once, then exits)
+  # ---------------------------------------------------------------------------
+  # This service ensures models are downloaded and loaded into VRAM before
+  # other services start using Ollama. It pulls models and sends warmup
+  # requests to load them into memory.
+  # ---------------------------------------------------------------------------
+  ollama-init:
+    image: curlimages/curl:latest
+    container_name: docuchat-ollama-init
+    entrypoint: ["/bin/sh", "/scripts/warmup.sh"]
+    volumes:
+      - ./infra/ollama/warmup.sh:/scripts/warmup.sh:ro
+    environment:
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_EMBED_MODEL: nomic-embed-text
+      OLLAMA_CHAT_MODEL: gemma:7b
+    depends_on:
+      ollama:
+        condition: service_healthy
+    networks:
+      - docuchat_net
+    restart: "no"
 
   # ---------------------------------------------------------------------------
   # CURL - Temporary HTTP client (for testing internal connectivity)

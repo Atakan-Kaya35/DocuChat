@@ -110,6 +110,14 @@ class IndexingWorker:
             job.document.save(update_fields=['status', 'updated_at'])
             
             logger.info(f"Claimed job {job.id} for document {job.document.filename}")
+            
+            # Audit log for job start
+            audit_indexing_started(
+                job_id=str(job.id),
+                document_id=str(job.document.id),
+                user_id=job.document.owner_user_id
+            )
+            
             return job
     
     def update_job_progress(
@@ -148,6 +156,14 @@ class IndexingWorker:
         job.document.status = DocumentStatus.FAILED
         job.document.save(update_fields=['status', 'updated_at'])
         
+        # Audit log for failure
+        audit_indexing_failed(
+            job_id=str(job.id),
+            document_id=str(job.document.id),
+            user_id=job.document.owner_user_id,
+            error=error_message
+        )
+        
         # Emit failure event via WebSocket
         publish_failed(
             document_id=str(job.document.id),
@@ -167,6 +183,18 @@ class IndexingWorker:
         
         job.document.status = DocumentStatus.INDEXED
         job.document.save(update_fields=['status', 'updated_at'])
+        
+        # Count chunks for audit
+        from apps.indexing.models import DocumentChunk
+        chunk_count = DocumentChunk.objects.filter(document=job.document).count()
+        
+        # Audit log for completion
+        audit_indexing_completed(
+            job_id=str(job.id),
+            document_id=str(job.document.id),
+            user_id=job.document.owner_user_id,
+            chunk_count=chunk_count
+        )
         
         # Emit completion event via WebSocket
         publish_complete(
@@ -321,8 +349,14 @@ class IndexingWorker:
         signal.signal(signal.SIGTERM, handle_signal)
         signal.signal(signal.SIGINT, handle_signal)
         
+        # Initial heartbeat
+        touch_heartbeat()
+        
         while self.running:
             try:
+                # Update heartbeat on each loop iteration
+                touch_heartbeat()
+                
                 if self.run_once():
                     # Job was processed, immediately check for more
                     continue

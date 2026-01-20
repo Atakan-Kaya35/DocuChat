@@ -1,0 +1,21 @@
+# Incident Postmortem: Citation mismatch after reindex (2026-01-16)
+
+User impact:
+- citations opened the wrong chunk after reindex
+- answers cited chunks that no longer matched old text
+
+Root cause:
+- chunk_index stability was violated when chunk window changed
+- reindex was executed using v1 procedure (no chunk deletion)
+- unique(document_id, chunk_index) prevented overwrite, leaving stale vectors
+
+Corrective actions:
+1) Enforce deletion of doc_chunks before enqueueing a reindex job.
+2) Treat embedding model changes as "mandatory reindex".
+3) Add an OPERATIONS runbook that includes verification query:
+   SELECT COUNT(*) FROM doc_chunks WHERE document_id=:doc_id;
+   must be 0 before new job.
+
+Lessons learned:
+- Always open citations when answering operational questions; snippets are insufficient.
+- Avoid “one-shot” reindex.

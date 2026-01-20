@@ -13,6 +13,13 @@ interface UploadProgress {
   status: 'uploading' | 'processing' | 'complete' | 'failed';
 }
 
+interface MultiUploadState {
+  total: number;
+  completed: number;
+  current: string | null;
+  failed: string[];
+}
+
 /**
  * HomePage - Main landing page with login/logout, user info, and document upload
  */
@@ -24,6 +31,7 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null);
   const [documents, setDocuments] = useState<Document[]>([]);
   const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
+  const [multiUpload, setMultiUpload] = useState<MultiUploadState | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Set up the API client with the token provider
@@ -95,7 +103,7 @@ export default function HomePage() {
     if (auth.isAuthenticated && auth.user) {
       setLoading(true);
       setError(null);
-      
+
       Promise.all([apiClient.getMe(), apiClient.listDocuments()])
         .then(([userData, docsData]) => {
           setUserInfo(userData);
@@ -113,43 +121,97 @@ export default function HomePage() {
     }
   }, [auth.isAuthenticated, auth.user]);
 
-  // Handle file upload
+  // Handle multi-file upload
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
+    const files = event.target.files;
+    if (!files || files.length === 0) return;
 
-    setUploadProgress({
-      documentId: '',
-      jobId: '',
-      stage: null,
-      progress: 0,
-      message: 'Uploading...',
-      status: 'uploading',
+    const fileArray: File[] = Array.from(files);
+    const totalFiles = fileArray.length;
+    const failedFiles: string[] = [];
+
+    setMultiUpload({
+      total: totalFiles,
+      completed: 0,
+      current: null,
+      failed: [],
     });
 
-    try {
-      const response = await apiClient.uploadDocument(file);
-      console.log('[HomePage] Upload response:', response);
-      setUploadProgress({
-        documentId: response.documentId,
-        jobId: response.jobId,
-        stage: null,
-        progress: 0,
-        message: 'Processing...',
-        status: 'processing',
-      });
-    } catch (err: unknown) {
-      console.error('Upload failed:', err);
-      const errorMessage = (err as { error?: string })?.error || 'Upload failed';
+    // Upload files sequentially
+    for (let i = 0; i < fileArray.length; i++) {
+      const file: File = fileArray[i];
+
+      setMultiUpload((prev: MultiUploadState | null) => ({
+        ...prev!,
+        current: file.name,
+      }));
+
       setUploadProgress({
         documentId: '',
         jobId: '',
         stage: null,
         progress: 0,
-        message: errorMessage,
+        message: `Uploading ${file.name} (${i + 1}/${totalFiles})...`,
+        status: 'uploading',
+      });
+
+      try {
+        const response = await apiClient.uploadDocument(file);
+        console.log(`[HomePage] Upload response for ${file.name}:`, response);
+
+        setUploadProgress({
+          documentId: response.documentId,
+          jobId: response.jobId,
+          stage: null,
+          progress: 0,
+          message: `Processing ${file.name}...`,
+          status: 'processing',
+        });
+
+        setMultiUpload((prev: MultiUploadState | null) => ({
+          ...prev!,
+          completed: prev!.completed + 1,
+        }));
+      } catch (err: unknown) {
+        console.error(`Upload failed for ${file.name}:`, err);
+        failedFiles.push(file.name);
+        setMultiUpload((prev: MultiUploadState | null) => ({
+          ...prev!,
+          completed: prev!.completed + 1,
+          failed: [...prev!.failed, file.name],
+        }));
+      }
+    }
+
+    // Final status
+    if (failedFiles.length === 0) {
+      setUploadProgress({
+        documentId: '',
+        jobId: '',
+        stage: null,
+        progress: 100,
+        message: `All ${totalFiles} file(s) uploaded successfully!`,
+        status: 'complete',
+      });
+    } else {
+      setUploadProgress({
+        documentId: '',
+        jobId: '',
+        stage: null,
+        progress: 0,
+        message: `${totalFiles - failedFiles.length}/${totalFiles} uploaded. Failed: ${failedFiles.join(', ')}`,
         status: 'failed',
       });
     }
+
+    // Refresh document list
+    loadDocuments();
+
+    // Clear multi-upload state after delay
+    setTimeout(() => {
+      setMultiUpload(null);
+      setUploadProgress(null);
+    }, 5000);
 
     // Reset file input
     if (fileInputRef.current) {
@@ -198,7 +260,7 @@ export default function HomePage() {
       <div style={styles.container}>
         <div style={styles.card}>
           <h1 style={styles.title}>DocuChat</h1>
-          
+
           {/* WebSocket Status */}
           <div style={styles.wsStatus}>
             <span
@@ -247,19 +309,30 @@ export default function HomePage() {
 
           {/* Document Upload Section */}
           <div style={styles.uploadSection}>
-            <h3 style={styles.sectionTitle}>Upload Document</h3>
+            <h3 style={styles.sectionTitle}>Upload Documents</h3>
             <input
               ref={fileInputRef}
               type="file"
               accept=".pdf,.txt,.md,.doc,.docx"
+              multiple
               onChange={handleFileUpload}
               style={styles.fileInput}
               disabled={uploadProgress?.status === 'uploading' || uploadProgress?.status === 'processing'}
             />
-            
+
             {/* Progress Bar */}
             {uploadProgress && (
               <div style={styles.progressContainer}>
+                {multiUpload && multiUpload.total > 1 && (
+                  <div style={styles.batchProgress}>
+                    <span>Batch: {multiUpload.completed}/{multiUpload.total}</span>
+                    {multiUpload.failed.length > 0 && (
+                      <span style={{ color: '#dc3545', marginLeft: '0.5rem' }}>
+                        ({multiUpload.failed.length} failed)
+                      </span>
+                    )}
+                  </div>
+                )}
                 <div style={styles.progressInfo}>
                   <span style={styles.progressStage}>
                     {uploadProgress.stage || uploadProgress.status}
@@ -275,8 +348,8 @@ export default function HomePage() {
                         uploadProgress.status === 'failed'
                           ? '#dc3545'
                           : uploadProgress.status === 'complete'
-                          ? '#28a745'
-                          : '#0066cc',
+                            ? '#28a745'
+                            : '#0066cc',
                     }}
                   />
                 </div>
@@ -336,7 +409,7 @@ export default function HomePage() {
       <div style={styles.card}>
         <h1 style={styles.title}>DocuChat</h1>
         <p style={styles.subtitle}>Chat with your documents using AI</p>
-        
+
         <button
           style={styles.button}
           onClick={() => {
@@ -354,10 +427,26 @@ export default function HomePage() {
         >
           Login with Keycloak
         </button>
-        
-        <div style={{ marginTop: '1rem', fontSize: '0.75rem', color: '#999' }}>
-          <p>Debug: isLoading={String(auth.isLoading)}, isAuth={String(auth.isAuthenticated)}</p>
-        </div>
+
+        <button
+          style={styles.registerButton}
+          onClick={() => {
+            // Use Keycloak login with registration action
+            // This works better than the /registrations endpoint
+            const keycloakUrl = import.meta.env.VITE_KEYCLOAK_URL || 'http://localhost';
+            const realm = import.meta.env.VITE_KEYCLOAK_REALM || 'docuchat';
+            const clientId = import.meta.env.VITE_KEYCLOAK_CLIENT_ID || 'docuchat-frontend';
+            const redirectUri = encodeURIComponent(`${window.location.origin}/callback`);
+            // Use kc_action=register to trigger registration flow
+            const registrationUrl = `${keycloakUrl}/realms/${realm}/protocol/openid-connect/auth?client_id=${clientId}&redirect_uri=${redirectUri}&response_type=code&scope=openid&kc_action=register`;
+            console.log('[HomePage] Redirecting to registration:', registrationUrl);
+            window.location.href = registrationUrl;
+          }}
+        >
+          Create Account
+        </button>
+
+        <p style={styles.orDivider}>or</p>
       </div>
     </div>
   );
@@ -398,6 +487,24 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: '6px',
     cursor: 'pointer',
     transition: 'background 0.2s',
+    width: '100%',
+  },
+  registerButton: {
+    background: 'transparent',
+    color: '#0066cc',
+    border: '2px solid #0066cc',
+    padding: '0.75rem 1.5rem',
+    fontSize: '1rem',
+    borderRadius: '6px',
+    cursor: 'pointer',
+    transition: 'all 0.2s',
+    width: '100%',
+    marginTop: '0.75rem',
+  },
+  orDivider: {
+    color: '#999',
+    fontSize: '0.875rem',
+    margin: '0.75rem 0 0 0',
   },
   actionButtons: {
     display: 'flex',
@@ -497,6 +604,14 @@ const styles: Record<string, React.CSSProperties> = {
   progressContainer: {
     marginTop: '1rem',
   },
+  batchProgress: {
+    fontSize: '0.75rem',
+    color: '#666',
+    marginBottom: '0.5rem',
+    display: 'flex',
+    justifyContent: 'center',
+    gap: '0.25rem',
+  },
   progressInfo: {
     display: 'flex',
     justifyContent: 'space-between',
@@ -531,6 +646,8 @@ const styles: Record<string, React.CSSProperties> = {
   documentsSection: {
     marginTop: '1.5rem',
     textAlign: 'left' as const,
+    maxHeight: '200px',
+    overflowY: 'auto' as const,
   },
   noDocuments: {
     color: '#666',

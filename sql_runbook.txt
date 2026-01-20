@@ -1,0 +1,45 @@
+# DB Runbook SQL (v3 - authoritative)
+
+This document contains exact SQL statements used by operations. Do not paraphrase; use as-is.
+
+## Reindex (authoritative SQL)
+
+Preconditions:
+- Only the owner can reindex.
+- If embedding model OR chunking rules changed, old vectors MUST be deleted.
+
+Step 1 — lock and mark request:
+BEGIN;
+UPDATE documents
+SET status = 'INDEXING_REQUESTED', updated_at = NOW()
+WHERE id = :doc_id AND owner_user_id = :user_id;
+COMMIT;
+
+Step 2 — delete old vectors (must happen before enqueuing):
+BEGIN;
+DELETE FROM doc_chunks
+WHERE document_id = :doc_id;
+COMMIT;
+
+Step 3 — create new job:
+INSERT INTO index_jobs (id, document_id, status, stage, progress, created_at, updated_at)
+VALUES (:job_id, :doc_id, 'QUEUED', 'RECEIVED', 0, NOW(), NOW());
+
+## Deletion (authoritative SQL + filesystem order)
+
+Deletion MUST be done in this order to avoid orphans:
+1) DELETE doc_chunks WHERE document_id=:doc_id;
+2) DELETE index_jobs WHERE document_id=:doc_id;
+3) Delete file from disk at documents.storage_path (performed by backend).
+4) DELETE documents WHERE id=:doc_id AND owner_user_id=:user_id;
+
+Verification query:
+SELECT COUNT(*) AS remaining_chunks FROM doc_chunks WHERE document_id = :doc_id;
+
+If remaining_chunks != 0, stop and investigate. Never delete the document row first.
+
+## Notes that are easy to miss
+
+- The status 'INDEXING_REQUESTED' is distinct from 'QUEUED'.
+- The worker claims jobs using FOR UPDATE SKIP LOCKED.
+- Any procedure that relies only on unique(document_id, chunk_index) without deleting old chunks is UNSAFE after chunking changes.

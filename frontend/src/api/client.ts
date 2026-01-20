@@ -67,6 +67,23 @@ export interface ChunkResponse {
   filename: string;
 }
 
+// Agent types
+export interface AgentTraceEntry {
+  type: 'plan' | 'tool_call' | 'final' | 'error';
+  tool?: string;
+  input?: Record<string, unknown>;
+  outputSummary?: string;
+  steps?: string[];
+  notes?: string;
+  error?: string;
+}
+
+export interface AgentResponse {
+  answer: string;
+  citations: Citation[];
+  trace?: AgentTraceEntry[];
+}
+
 class ApiClient {
   private getAccessToken: (() => string | null) | null = null;
 
@@ -214,6 +231,107 @@ class ApiClient {
    */
   async getChunk(docId: string, chunkIndex: number): Promise<ChunkResponse> {
     return this.request<ChunkResponse>(`/docs/${docId}/chunks/${chunkIndex}`);
+  }
+
+  /**
+   * POST /api/agent/run - Execute bounded agent with tools
+   */
+  async runAgent(question: string, options?: {
+    returnTrace?: boolean;
+  }): Promise<AgentResponse> {
+    return this.request<AgentResponse>('/agent/run', {
+      method: 'POST',
+      body: JSON.stringify({
+        question,
+        mode: 'agent',
+        returnTrace: options?.returnTrace ?? false,
+      }),
+    });
+  }
+
+  /**
+   * POST /api/agent/stream - Execute bounded agent with SSE streaming
+   * 
+   * Yields trace events as they occur, then yields final AgentResponse.
+   */
+  async *runAgentStream(
+    question: string,
+    signal?: AbortSignal
+  ): AsyncGenerator<AgentTraceEntry | AgentResponse, void, unknown> {
+    const url = `${API_BASE_URL}/agent/stream`;
+    
+    const headers: HeadersInit = {
+      'Content-Type': 'application/json',
+    };
+
+    if (this.getAccessToken) {
+      const token = this.getAccessToken();
+      if (token) {
+        (headers as Record<string, string>)['Authorization'] = `Bearer ${token}`;
+      }
+    }
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ question }),
+      signal,
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+      throw { error: errorData.error || `HTTP ${response.status}`, status: response.status };
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) {
+      throw { error: 'No response body', status: 500 };
+    }
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      
+      if (done) break;
+      
+      buffer += decoder.decode(value, { stream: true });
+      
+      // Parse SSE events from buffer
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || ''; // Keep incomplete line in buffer
+      
+      let eventType = '';
+      let eventData = '';
+      
+      for (const line of lines) {
+        if (line.startsWith('event: ')) {
+          eventType = line.slice(7).trim();
+        } else if (line.startsWith('data: ')) {
+          eventData = line.slice(6);
+        } else if (line === '' && eventType && eventData) {
+          // End of event
+          try {
+            const parsed = JSON.parse(eventData);
+            
+            if (eventType === 'trace') {
+              yield parsed as AgentTraceEntry;
+            } else if (eventType === 'complete') {
+              yield parsed as AgentResponse;
+            } else if (eventType === 'error') {
+              throw { error: parsed.error, status: 500 };
+            }
+          } catch (e) {
+            if ((e as { error?: string }).error) throw e;
+            console.error('Failed to parse SSE event:', eventData);
+          }
+          
+          eventType = '';
+          eventData = '';
+        }
+      }
+    }
   }
 }
 

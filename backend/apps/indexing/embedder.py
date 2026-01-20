@@ -26,6 +26,11 @@ def get_ollama_url() -> str:
     return getattr(settings, 'OLLAMA_BASE_URL', 'http://ollama:11434')
 
 
+def get_embed_timeout() -> int:
+    """Get the embedding timeout from settings."""
+    return getattr(settings, 'OLLAMA_EMBED_TIMEOUT', 120)
+
+
 def generate_embedding(text: str, model: str = EMBEDDING_MODEL) -> List[float]:
     """
     Generate an embedding vector for a single text.
@@ -44,6 +49,7 @@ def generate_embedding(text: str, model: str = EMBEDDING_MODEL) -> List[float]:
         raise EmbeddingError("Cannot generate embedding for empty text")
     
     url = f"{get_ollama_url()}/api/embeddings"
+    embed_timeout = get_embed_timeout()
     
     try:
         response = requests.post(
@@ -52,7 +58,7 @@ def generate_embedding(text: str, model: str = EMBEDDING_MODEL) -> List[float]:
                 "model": model,
                 "prompt": text
             },
-            timeout=60  # Embeddings should be quick
+            timeout=embed_timeout
         )
         
         if response.status_code != 200:

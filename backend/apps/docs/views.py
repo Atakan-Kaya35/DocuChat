@@ -474,3 +474,101 @@ def get_chunk(request, document_id, chunk_index):
         'text': chunk.text,
         'filename': document.filename,
     })
+
+
+@csrf_exempt
+@require_http_methods(["DELETE"])
+@auth_required
+def delete_document(request, document_id):
+    """
+    Delete a document and all associated data.
+    
+    DELETE /api/docs/<document_id>
+    
+    Deletion is performed in the correct order to avoid orphaned data:
+    1. Delete all chunks (vector embeddings)
+    2. Delete all index jobs
+    3. Delete file from storage
+    4. Delete document record
+    
+    Returns:
+        204 No Content on success
+        404 if document not found or not owned by user
+    """
+    from apps.indexing.models import DocumentChunk
+    from apps.authn.audit import log_audit_from_request, AuditEvent
+    
+    user_id = request.user_claims.sub
+    
+    # Get the document
+    try:
+        document = Document.objects.get(id=document_id)
+    except Document.DoesNotExist:
+        return JsonResponse(
+            {'error': 'Document not found', 'code': 'NOT_FOUND'},
+            status=404
+        )
+    
+    # Check ownership - return 404 to not leak existence
+    if document.owner_user_id != user_id:
+        return JsonResponse(
+            {'error': 'Document not found', 'code': 'NOT_FOUND'},
+            status=404
+        )
+    
+    # Store info for audit log before deletion
+    doc_id_str = str(document.id)
+    doc_filename = document.filename
+    storage_path = document.storage_path
+    
+    try:
+        with transaction.atomic():
+            # 1. Delete chunks (vector embeddings)
+            chunks_deleted, _ = DocumentChunk.objects.filter(document=document).delete()
+            logger.info(f"Deleted {chunks_deleted} chunks for document {doc_id_str}")
+            
+            # 2. Delete index jobs
+            jobs_deleted, _ = IndexJob.objects.filter(document=document).delete()
+            logger.info(f"Deleted {jobs_deleted} index jobs for document {doc_id_str}")
+            
+            # 3. Delete file from storage
+            try:
+                storage = get_storage()
+                if storage.exists(storage_path):
+                    storage.delete(storage_path)
+                    logger.info(f"Deleted file {storage_path}")
+                
+                # Also try to delete extracted text file
+                extracted_path = Path(settings.EXTRACTED_ROOT) / f"{doc_id_str}.txt"
+                if extracted_path.exists():
+                    extracted_path.unlink()
+                    logger.info(f"Deleted extracted text {extracted_path}")
+            except StorageError as e:
+                logger.warning(f"Error deleting files for {doc_id_str}: {e}")
+                # Continue with deletion even if file removal fails
+            
+            # 4. Delete document record
+            document.delete()
+            logger.info(f"Deleted document record {doc_id_str}")
+        
+        # Audit log
+        log_audit_from_request(
+            request,
+            AuditEvent.DOCUMENT_DELETED,
+            metadata={
+                'document_id': doc_id_str,
+                'filename': doc_filename,
+                'chunks_deleted': chunks_deleted,
+                'jobs_deleted': jobs_deleted,
+            }
+        )
+        
+        # 204 No Content - standard for successful DELETE
+        return JsonResponse({}, status=204)
+        
+    except Exception as e:
+        logger.exception(f"Error deleting document {doc_id_str}: {e}")
+        return JsonResponse(
+            {'error': 'Failed to delete document', 'code': 'DELETE_FAILED'},
+            status=500
+        )

@@ -1,0 +1,15 @@
+# Change Request (2026-01-15)
+
+Requested changes:
+1. Lower rate limits to reduce CPU spikes:
+   - upload: 3 per 10 minutes per user
+   - ask: 20 per 10 minutes per user
+2. Retries should be tightened:
+   - embeddings: 2 attempts max
+   - generation: 1 retry max
+3. Reindex must delete old chunks to avoid mixed-embedding state.
+4. Deletion must be full cleanup: chunks, jobs, file, document row.
+
+Rationale:
+- Observed duplicated chunks after reindex.
+- Observed latency spikes during mass uploads.

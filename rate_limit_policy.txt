@@ -1,0 +1,30 @@
+# Rate Limit Policy Matrix
+
+This file exists because limits were changed three times.
+
+## Definitions
+- upload limit applies to POST /api/docs/upload
+- ask limit applies to POST /api/chat/ask
+
+## Proposed limits by document (do not assume latest)
+
+A) OPERATIONS_RUNBOOK_v1
+- upload: 10 per minute per user
+- ask: 60 per minute per user
+
+B) OPERATIONS_RUNBOOK_v2
+- upload: 5 per 10 minutes per user
+- ask: 30 per 10 minutes per user
+
+C) Change Request (2026-01-15)
+- upload: 3 per 10 minutes per user
+- ask: 20 per 10 minutes per user
+
+D) Decision note (2026-01-18)
+- upload: 5 per 10 minutes per user (reverted)
+- ask: 30 per 10 minutes per user (reverted)
+
+## Selection rule (authoritative)
+- If there is a dated decision note newer than a change request, use the decision note.
+- Otherwise use the newest dated change request.
+- If two docs conflict with the same date, prefer the one marked "authoritative".

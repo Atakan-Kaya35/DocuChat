@@ -8,4 +8,6 @@ export type {
   Citation,
   AskResponse,
   ChunkResponse,
+  AgentResponse,
+  AgentTraceEntry,
 } from './client';

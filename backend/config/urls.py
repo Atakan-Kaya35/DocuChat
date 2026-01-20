@@ -22,4 +22,5 @@ urlpatterns = [
     path('api/', include('apps.authn.urls')),
     path('api/docs/', include('apps.docs.urls')),
     path('api/rag/', include('apps.rag.urls')),
+    path('api/agent/', include('apps.agent.urls')),
 ]

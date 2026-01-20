@@ -32,6 +32,7 @@ INSTALLED_APPS = [
     'apps.docs',
     'apps.indexing',
     'apps.rag',
+    'apps.agent',
 ]
 
 MIDDLEWARE = [
@@ -147,7 +148,13 @@ CHANNEL_LAYERS = {
 # =============================================================================
 OLLAMA_BASE_URL = os.getenv('OLLAMA_BASE_URL', 'http://ollama:11434')
 OLLAMA_EMBED_MODEL = os.getenv('OLLAMA_EMBED_MODEL', 'nomic-embed-text')
-OLLAMA_CHAT_MODEL = os.getenv('OLLAMA_CHAT_MODEL', 'llama3.2')
+OLLAMA_CHAT_MODEL = os.getenv('OLLAMA_CHAT_MODEL', 'gemma:7b')
+
+# LLM Timeout settings (in seconds) - increase for slower hardware
+# Default: 5 minutes for planning, 10 minutes for chat/agent
+OLLAMA_PLAN_TIMEOUT = int(os.getenv('OLLAMA_PLAN_TIMEOUT', '300'))  # 5 min
+OLLAMA_CHAT_TIMEOUT = int(os.getenv('OLLAMA_CHAT_TIMEOUT', '600'))  # 10 min
+OLLAMA_EMBED_TIMEOUT = int(os.getenv('OLLAMA_EMBED_TIMEOUT', '120'))  # 2 min
 
 # =============================================================================
 # File Upload Configuration
