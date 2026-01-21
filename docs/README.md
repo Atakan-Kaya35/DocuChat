@@ -4,6 +4,20 @@ This guide covers how to run DocuChat locally from a clean clone.
 
 ---
 
+## System Overview
+
+DocuChat is a local-first, document-grounded RAG (Retrieval-Augmented Generation) application. All components run in Docker containers on a single host.
+
+### High-Level Architecture
+
+![High Level Architecture](Diagrams/HighLevelArchD.png)
+
+### Container Architecture
+
+![Container Diagram](Diagrams/ContainerD.png)
+
+---
+
 ## Prerequisites
 
 - **Docker Desktop** (with Docker Compose v2)
@@ -116,6 +130,40 @@ curl -X POST http://localhost/api/rag/ask \
   -H "Content-Type: application/json" \
   -d '{"question": "How do I reindex a document?"}'
 ```
+
+---
+
+## How It Works
+
+### RAG (Retrieval-Augmented Generation) Flow
+
+When you ask a question, DocuChat retrieves relevant chunks from your documents and uses them to generate an accurate, grounded answer.
+
+![RAG Sequence Diagram](Diagrams/RAGseqD.png)
+
+### AI Workflow
+
+The complete AI workflow showing how queries are processed:
+
+![AI Workflow](Diagrams/AIWorkD.png)
+
+### Agent Mode
+
+DocuChat includes an optional Agent mode that can perform multi-step reasoning with tool use:
+
+![Agent Loop Diagram](Diagrams/AgentLoopD.png)
+
+### Action Flow
+
+How user actions flow through the system:
+
+![Action Diagram](Diagrams/ActionD.png)
+
+### Complete Sequence Flow
+
+End-to-end sequence of operations:
+
+![Sequence Diagram](Diagrams/SeqD.png)
 
 ---
 
