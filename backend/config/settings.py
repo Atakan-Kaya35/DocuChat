@@ -162,6 +162,19 @@ OLLAMA_EMBED_TIMEOUT = int(os.getenv('OLLAMA_EMBED_TIMEOUT', '120'))  # 2 min
 ENABLE_QUERY_REFINEMENT = os.getenv('ENABLE_QUERY_REFINEMENT', 'True').lower() in ('true', '1', 'yes')
 
 # =============================================================================
+# Cross-Encoder Reranker (optional)
+# =============================================================================
+# When enabled at server level AND request toggle is on, reranking is applied
+# Set to False to disable reranking server-wide (default)
+ENABLE_RERANKER = os.getenv('ENABLE_RERANKER', 'True').lower() in ('true', '1', 'yes')
+
+# Number of candidates to retrieve from vector search for reranking
+RERANK_TOP_K = int(os.getenv('RERANK_TOP_K', '20'))
+
+# Number of candidates to keep after reranking
+RERANK_KEEP_N = int(os.getenv('RERANK_KEEP_N', '8'))
+
+# =============================================================================
 # File Upload Configuration
 # =============================================================================
 # Root directory for uploaded files

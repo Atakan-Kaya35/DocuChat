@@ -46,8 +46,10 @@ def build_context_block(citations: List[Citation]) -> str:
     """
     Build a numbered context block from citations.
     
+    Uses full chunk text for LLM context (not truncated snippet).
+    
     Format:
-    [1] (document.pdf, chunk 3): The text content here...
+    [1] (document.pdf, chunk 3): The full text content here...
     [2] (other.txt, chunk 1): More content...
     """
     if not citations:
@@ -55,9 +57,11 @@ def build_context_block(citations: List[Citation]) -> str:
     
     parts = []
     for i, citation in enumerate(citations, 1):
+        # Use full text if available, fallback to snippet
+        content = citation.text if citation.text else citation.snippet
         parts.append(
             f"[{i}] ({citation.document_title}, chunk {citation.chunk_index}): "
-            f"{citation.snippet}"
+            f"{content}"
         )
     return "\n\n".join(parts)
 

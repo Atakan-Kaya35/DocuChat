@@ -7,17 +7,29 @@ DocuChat uses Ollama for local LLM inference, keeping all data on-premises.
 | Model | Purpose | Size |
 |-------|---------|------|
 | `nomic-embed-text` | Document embeddings for vector search | ~275 MB |
-| `gemma:7b` | Chat/RAG responses and agent reasoning | ~5 GB |
+| `gemma:7b` | Primary chat/RAG responses and agent reasoning | ~5 GB |
+| `llama3.2` | Alternate chat model | ~2 GB |
 
-## Automatic Model Loading
+## Automatic Model Download
+
+**Important:** Model files are NOT stored in Git due to their large size. When you clone this repository and run `docker compose up`, the models will be downloaded automatically.
 
 The `ollama-init` service automatically:
 
 1. **Waits** for Ollama to be healthy
-2. **Pulls** required models if not already present
+2. **Pulls** required models if not already present (this may take several minutes on first run)
 3. **Warms up** models by sending initial requests (loads into VRAM)
 
 This ensures that when `docker compose up` completes, models are ready for immediate inference with no cold-start delay.
+
+### First Run Download Times
+
+On a typical internet connection, expect:
+- `nomic-embed-text`: ~1-2 minutes
+- `gemma:7b`: ~5-10 minutes  
+- `llama3.2`: ~2-5 minutes
+
+Subsequent runs will skip downloads as models are cached locally.
 
 ## Manual Model Management
 
@@ -43,6 +55,7 @@ Models are configured via environment variables in `backend/.env.sample`:
 OLLAMA_BASE_URL=http://ollama:11434
 OLLAMA_EMBED_MODEL=nomic-embed-text
 OLLAMA_CHAT_MODEL=gemma:7b
+OLLAMA_ALT_CHAT_MODEL=llama3.2
 ```
 
 The `ollama-init` service reads these same variables to know which models to pull.
@@ -53,7 +66,9 @@ Models are stored in a bind mount at `./infra/ollama/models/`. This ensures:
 
 - Models persist across container restarts
 - Models survive `docker compose down -v`
-- Models can be pre-populated before first run
+- Models are cached locally after first download
+
+**Note:** The `models/` folder is git-ignored. Only a `.gitkeep` file is tracked to preserve the directory structure.
 
 ## Troubleshooting
 

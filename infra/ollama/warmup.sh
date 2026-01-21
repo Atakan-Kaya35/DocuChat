@@ -11,6 +11,7 @@ set -e
 OLLAMA_HOST="${OLLAMA_BASE_URL:-http://ollama:11434}"
 EMBED_MODEL="${OLLAMA_EMBED_MODEL:-nomic-embed-text}"
 CHAT_MODEL="${OLLAMA_CHAT_MODEL:-gemma:7b}"
+ALT_CHAT_MODEL="${OLLAMA_ALT_CHAT_MODEL:-llama3.2}"
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
@@ -82,13 +83,22 @@ log "=== Ollama Model Warmup Starting ==="
 
 wait_for_ollama
 
-# Pull models first
+# Pull models first (embedding + chat models)
+log "Pulling embedding model..."
 pull_model "$EMBED_MODEL"
+
+log "Pulling primary chat model..."
 pull_model "$CHAT_MODEL"
 
+log "Pulling alternate chat model..."
+pull_model "$ALT_CHAT_MODEL"
+
 # Warm them up (load into VRAM)
+log "Warming up models..."
 warmup_embedding "$EMBED_MODEL"
 warmup_model "$CHAT_MODEL" "Hello"
+warmup_model "$ALT_CHAT_MODEL" "Hello"
 
 log "=== All models pulled and warmed up! ==="
+log "Models ready: $EMBED_MODEL, $CHAT_MODEL, $ALT_CHAT_MODEL"
 log "System is ready for inference."

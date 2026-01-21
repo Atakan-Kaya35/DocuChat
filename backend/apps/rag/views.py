@@ -22,9 +22,24 @@ from apps.rag.embeddings import (
     QueryValidationError,
     EmbeddingError,
 )
-from apps.rag.retrieval import retrieve_for_query, DEFAULT_TOP_K
+from apps.rag.retrieval import (
+    retrieve_for_query,
+    retrieve_chunks,
+    retrieve_chunks_for_reranking,
+    RetrievalResult,
+    RetrievalCandidate,
+    Citation,
+    DEFAULT_TOP_K,
+)
 from apps.rag.chat import generate_answer, ChatError, DEFAULT_TEMPERATURE, DEFAULT_MAX_TOKENS
 from apps.rag.query_rewriter import rewrite_query
+from apps.rag.reranker import (
+    ChunkCandidate,
+    rerank_candidates,
+    is_reranker_enabled,
+    get_rerank_top_k,
+    get_rerank_keep_n,
+)
 from apps.indexing.retry import (
     retry_with_backoff,
     GENERATION_RETRY_CONFIG,
@@ -213,10 +228,15 @@ class AskView(View):
         temperature = body.get("temperature", DEFAULT_TEMPERATURE)
         max_tokens = body.get("maxTokens", DEFAULT_MAX_TOKENS)
         refine_prompt = body.get("refine_prompt", False)
+        rerank = body.get("rerank", False)
         
         # Validate refine_prompt
         if not isinstance(refine_prompt, bool):
             refine_prompt = False
+        
+        # Validate rerank
+        if not isinstance(rerank, bool):
+            rerank = False
         
         # Validate top_k
         if not isinstance(top_k, int) or top_k < 1 or top_k > 20:
@@ -275,15 +295,103 @@ class AskView(View):
                 status=503
             )
         
-        # Retrieve relevant chunks (use retrieval_query)
-        retrieval_result = retrieve_for_query(
-            query=retrieval_query,
-            query_embedding=query_embedding,
-            user_id=user_id,
-            top_k=top_k,
-        )
+        # Reranking logic
+        rerank_used = False
+        rerank_latency_ms = None
         
-        logger.info(f"Retrieved {len(retrieval_result.citations)} chunks for question")
+        # Check if reranking should be applied
+        should_rerank = rerank and is_reranker_enabled()
+        
+        if should_rerank:
+            # Retrieve more candidates for reranking
+            rerank_top_k = get_rerank_top_k()
+            rerank_keep_n = get_rerank_keep_n()
+            
+            try:
+                # Get candidates with full text for reranking
+                candidates = retrieve_chunks_for_reranking(
+                    query_embedding=query_embedding,
+                    user_id=user_id,
+                    top_k=rerank_top_k,
+                )
+                
+                if candidates:
+                    # Convert to ChunkCandidate format for reranker
+                    chunk_candidates = [
+                        ChunkCandidate(
+                            chunk_id=c.chunk_id,
+                            doc_id=c.doc_id,
+                            doc_title=c.document_title,
+                            text=c.text,
+                            snippet=c.snippet,
+                            vector_score=c.vector_score,
+                        )
+                        for c in candidates
+                    ]
+                    
+                    # Rerank candidates
+                    reranked, rerank_latency_ms = rerank_candidates(
+                        query=retrieval_query,
+                        candidates=chunk_candidates,
+                        top_n=rerank_keep_n,
+                    )
+                    
+                    # Convert back to Citations
+                    citations = [
+                        Citation(
+                            doc_id=c.doc_id,
+                            chunk_id=c.chunk_id,
+                            chunk_index=next(
+                                (cand.chunk_index for cand in candidates if cand.chunk_id == c.chunk_id),
+                                0
+                            ),
+                            snippet=c.snippet,
+                            score=c.rerank_score if c.rerank_score is not None else c.vector_score,
+                            document_title=c.doc_title,
+                            text=c.text,  # Full text for LLM context
+                        )
+                        for c in reranked
+                    ]
+                    
+                    retrieval_result = RetrievalResult(
+                        query=retrieval_query,
+                        citations=citations,
+                    )
+                    rerank_used = True
+                    logger.info(
+                        f"Reranked {len(candidates)} -> {len(citations)} chunks "
+                        f"in {rerank_latency_ms:.0f}ms"
+                    )
+                else:
+                    # No candidates, use empty result
+                    retrieval_result = RetrievalResult(
+                        query=retrieval_query,
+                        citations=[],
+                    )
+                    logger.info("No candidates to rerank")
+                    
+            except Exception as e:
+                # Reranking failed, fall back to standard retrieval
+                logger.warning(f"Reranking failed, falling back to vector order: {e}")
+                retrieval_result = retrieve_for_query(
+                    query=retrieval_query,
+                    query_embedding=query_embedding,
+                    user_id=user_id,
+                    top_k=top_k,
+                )
+        else:
+            # Standard retrieval without reranking
+            retrieval_result = retrieve_for_query(
+                query=retrieval_query,
+                query_embedding=query_embedding,
+                user_id=user_id,
+                top_k=top_k,
+            )
+        
+        logger.info(
+            f"Retrieved {len(retrieval_result.citations)} chunks for question "
+            f"(rerank_used={rerank_used})"
+        )
         
         # Generate answer with retry (handles no-context case internally)
         try:
@@ -332,6 +440,11 @@ class AskView(View):
         response_data = chat_response.to_dict()
         if rewritten_query:
             response_data["rewritten_query"] = rewritten_query
+        
+        # Add rerank debug metadata
+        response_data["rerank_used"] = rerank_used
+        if rerank_latency_ms is not None:
+            response_data["rerank_latency_ms"] = round(rerank_latency_ms, 1)
         
         return JsonResponse(response_data)
 

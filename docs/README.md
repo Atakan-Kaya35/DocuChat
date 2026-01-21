@@ -55,7 +55,9 @@ This starts 8 containers:
 - `keycloak` - Identity provider
 - `ollama` - Local LLM
 
-**First run takes 5-10 minutes** to pull images and download LLM models (~4GB for gemma:7b + nomic-embed-text).
+**First run takes 10-20 minutes** to pull images and download LLM models (~7GB total for gemma:7b, llama3.2, and nomic-embed-text).
+
+> **Note:** LLM models are downloaded automatically on first run. They are stored in `./infra/ollama/models/` and persist between restarts.
 
 ### 4. Access the Application
 

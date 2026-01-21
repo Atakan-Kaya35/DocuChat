@@ -33,6 +33,9 @@ export default function ChatPage() {
   // Refine prompt toggle (query rewriting)
   const [refinePrompt, setRefinePrompt] = useState(false);
 
+  // Rerank toggle (cross-encoder reranking)
+  const [rerank, setRerank] = useState(false);
+
   // Streaming agent thinking state
   const [streamingSteps, setStreamingSteps] = useState<AgentTraceEntry[]>([]);
 
@@ -124,7 +127,7 @@ export default function ChatPage() {
         const collectedTrace: AgentTraceEntry[] = [];
         let finalResponse: AgentResponse | null = null;
 
-        for await (const event of apiClient.runAgentStream(question, { refinePrompt })) {
+        for await (const event of apiClient.runAgentStream(question, { refinePrompt, rerank })) {
           // Check if it's a trace entry or final response
           if ('type' in event && !('answer' in event)) {
             // It's a trace entry
@@ -150,8 +153,8 @@ export default function ChatPage() {
           throw new Error('No response received from agent');
         }
       } else {
-        // Call standard RAG API (no need to pass refinePrompt since rewrite was done separately)
-        const response: AskResponse = await apiClient.ask(question);
+        // Call standard RAG API with rerank option
+        const response: AskResponse = await apiClient.ask(question, { rerank });
 
         assistantMessage = {
           id: crypto.randomUUID(),
@@ -184,7 +187,7 @@ export default function ChatPage() {
       setStreamingSteps([]);
       inputRef.current?.focus();
     }
-  }, [input, chatState, agentMode, refinePrompt]);
+  }, [input, chatState, agentMode, refinePrompt, rerank]);
 
   // Handle citation click
   const handleCitationClick = useCallback(async (citation: Citation) => {
@@ -260,6 +263,26 @@ export default function ChatPage() {
             />
           </button>
           <span style={styles.toggleText}>{refinePrompt ? '✨ Refine' : 'Refine'}</span>
+
+          {/* Rerank Toggle */}
+          <button
+            type="button"
+            onClick={() => setRerank(!rerank)}
+            style={{
+              ...styles.toggleButton,
+              background: rerank ? '#27ae60' : '#ccc',
+            }}
+            aria-pressed={rerank}
+            title={rerank ? 'Rerank ON - Uses cross-encoder to improve relevance of selected chunks' : 'Rerank OFF - Using vector similarity order'}
+          >
+            <span
+              style={{
+                ...styles.toggleKnob,
+                transform: rerank ? 'translateX(16px)' : 'translateX(0)',
+              }}
+            />
+          </button>
+          <span style={styles.toggleText}>{rerank ? '🎯 Rerank' : 'Rerank'}</span>
 
           {/* Agent Mode Toggle */}
           <button

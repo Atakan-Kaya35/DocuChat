@@ -58,6 +58,8 @@ export interface AskResponse {
   citations: Citation[];
   model: string;
   rewritten_query?: string;  // Present when refine_prompt was enabled
+  rerank_used?: boolean;     // Whether reranking was applied
+  rerank_latency_ms?: number; // Rerank step latency in ms
 }
 
 export interface ChunkResponse {
@@ -84,6 +86,8 @@ export interface AgentResponse {
   citations: Citation[];
   trace?: AgentTraceEntry[];
   rewritten_query?: string;  // Present when refine_prompt was enabled
+  rerank_used?: boolean;     // Whether reranking was applied
+  rerank_latency_ms?: number; // Rerank step latency in ms
 }
 
 class ApiClient {
@@ -232,6 +236,7 @@ class ApiClient {
     temperature?: number;
     maxTokens?: number;
     refinePrompt?: boolean;
+    rerank?: boolean;
   }): Promise<AskResponse> {
     return this.request<AskResponse>('/rag/ask', {
       method: 'POST',
@@ -241,6 +246,7 @@ class ApiClient {
         temperature: options?.temperature,
         maxTokens: options?.maxTokens,
         refine_prompt: options?.refinePrompt,
+        rerank: options?.rerank,
       }),
     });
   }
@@ -258,6 +264,7 @@ class ApiClient {
   async runAgent(question: string, options?: {
     returnTrace?: boolean;
     refinePrompt?: boolean;
+    rerank?: boolean;
   }): Promise<AgentResponse> {
     return this.request<AgentResponse>('/agent/run', {
       method: 'POST',
@@ -266,6 +273,7 @@ class ApiClient {
         mode: 'agent',
         returnTrace: options?.returnTrace ?? false,
         refine_prompt: options?.refinePrompt,
+        rerank: options?.rerank,
       }),
     });
   }
@@ -279,6 +287,7 @@ class ApiClient {
     question: string,
     options?: {
       refinePrompt?: boolean;
+      rerank?: boolean;
     },
     signal?: AbortSignal
   ): AsyncGenerator<AgentTraceEntry | AgentResponse, void, unknown> {
@@ -301,6 +310,7 @@ class ApiClient {
       body: JSON.stringify({
         question,
         refine_prompt: options?.refinePrompt,
+        rerank: options?.rerank,
       }),
       signal,
     });

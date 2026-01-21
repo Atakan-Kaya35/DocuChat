@@ -16,7 +16,14 @@ from django.conf import settings
 from apps.indexing.models import DocumentChunk
 from apps.docs.models import Document
 from apps.rag.embeddings import embed_query, normalize_query, QueryValidationError, EmbeddingError
-from apps.rag.retrieval import retrieve_for_query
+from apps.rag.retrieval import retrieve_for_query, retrieve_chunks_for_reranking, RetrievalResult, Citation
+from apps.rag.reranker import (
+    ChunkCandidate,
+    rerank_candidates,
+    is_reranker_enabled,
+    get_rerank_top_k,
+    get_rerank_keep_n,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -104,15 +111,17 @@ class ToolAccessError(ToolError):
     pass
 
 
-def search_docs(query: str, user_id: str) -> SearchDocsOutput:
+def search_docs(query: str, user_id: str, rerank: bool = False) -> SearchDocsOutput:
     """
     Search user's documents for relevant content.
     
     Wraps Phase 3 retrieval with bounded query and results.
+    Optionally applies cross-encoder reranking if enabled.
     
     Args:
         query: Search query (max 500 chars)
         user_id: Keycloak subject ID for ownership filtering
+        rerank: Whether to apply cross-encoder reranking
         
     Returns:
         SearchDocsOutput with up to 5 results
@@ -140,7 +149,69 @@ def search_docs(query: str, user_id: str) -> SearchDocsOutput:
         # Generate embedding
         query_embedding = embed_query(normalized_query)
         
-        # Retrieve relevant chunks (scoped to user)
+        # Check if reranking should be applied
+        should_rerank = rerank and is_reranker_enabled()
+        
+        if should_rerank:
+            # Retrieve more candidates for reranking
+            rerank_top_k = get_rerank_top_k()
+            
+            try:
+                candidates = retrieve_chunks_for_reranking(
+                    query_embedding=query_embedding,
+                    user_id=user_id,
+                    top_k=rerank_top_k,
+                )
+                
+                if candidates:
+                    # Convert to ChunkCandidate format
+                    chunk_candidates = [
+                        ChunkCandidate(
+                            chunk_id=c.chunk_id,
+                            doc_id=c.doc_id,
+                            doc_title=c.document_title,
+                            text=c.text,
+                            snippet=c.snippet,
+                            vector_score=c.vector_score,
+                        )
+                        for c in candidates
+                    ]
+                    
+                    # Rerank and keep top results
+                    reranked, latency_ms = rerank_candidates(
+                        query=normalized_query,
+                        candidates=chunk_candidates,
+                        top_n=MAX_SEARCH_RESULTS,  # Keep 5 for agent tool
+                    )
+                    
+                    logger.info(
+                        f"search_docs: Reranked {len(candidates)} -> {len(reranked)} "
+                        f"in {latency_ms:.0f}ms"
+                    )
+                    
+                    # Convert to SearchResult format
+                    results = []
+                    for c in reranked:
+                        # Find original chunk_index
+                        chunk_index = next(
+                            (cand.chunk_index for cand in candidates if cand.chunk_id == c.chunk_id),
+                            0
+                        )
+                        results.append(SearchResult(
+                            doc_id=c.doc_id,
+                            chunk_id=c.chunk_id,
+                            chunk_index=chunk_index,
+                            snippet=c.snippet[:SNIPPET_LENGTH] if c.snippet else "",
+                            score=c.rerank_score if c.rerank_score is not None else c.vector_score,
+                        ))
+                    
+                    return SearchDocsOutput(results=results)
+                    
+            except Exception as e:
+                # Reranking failed, fall back to standard search
+                logger.warning(f"search_docs: Reranking failed, falling back: {e}")
+        
+        # Standard retrieval (no reranking or fallback)
         retrieval_result = retrieve_for_query(
             query=normalized_query,
             query_embedding=query_embedding,

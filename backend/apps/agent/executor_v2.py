@@ -581,7 +581,8 @@ def execute_tool(
     tool_call: ToolCallAction, 
     user_id: str,
     state: AgentState,
-    trace: List[TraceEntry]
+    trace: List[TraceEntry],
+    rerank: bool = False
 ) -> Tuple[bool, str]:
     """
     Execute a single tool and update state.
@@ -597,7 +598,7 @@ def execute_tool(
             if not query:
                 return False, "Query is required"
             
-            result = search_docs(query, user_id)
+            result = search_docs(query, user_id, rerank=rerank)
             
             # Get filename mapping
             filename_map = {}
@@ -795,7 +796,7 @@ def fallback_citations_from_search(state: AgentState) -> List[GroundedCitation]:
 # Main Agent Loop
 # ============================================================================
 
-def run_agent_v2(question: str, user_id: str) -> AgentResult:
+def run_agent_v2(question: str, user_id: str, rerank: bool = False) -> AgentResult:
     """
     Execute the bounded agent loop with validation gates.
     
@@ -907,7 +908,8 @@ def run_agent_v2(question: str, user_id: str) -> AgentResult:
                 action.tool_call,
                 user_id,
                 state,
-                trace
+                trace,
+                rerank=rerank
             )
             
             if not success:
@@ -1073,7 +1075,7 @@ def run_agent_v2(question: str, user_id: str) -> AgentResult:
 # Streaming Generator Version (for SSE)
 # ============================================================================
 
-def run_agent_v2_streaming(question: str, user_id: str) -> Generator:
+def run_agent_v2_streaming(question: str, user_id: str, rerank: bool = False) -> Generator:
     """
     Execute the bounded agent loop with streaming events.
     
@@ -1082,6 +1084,7 @@ def run_agent_v2_streaming(question: str, user_id: str) -> Generator:
     Args:
         question: User's question (max 1000 chars)
         user_id: Keycloak subject ID
+        rerank: Whether to apply cross-encoder reranking
         
     Yields:
         TraceEntry objects during execution
@@ -1177,7 +1180,8 @@ def run_agent_v2_streaming(question: str, user_id: str) -> Generator:
                 action.tool_call,
                 user_id,
                 state,
-                trace
+                trace,
+                rerank=rerank
             )
             
             if trace:

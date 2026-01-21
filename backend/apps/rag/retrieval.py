@@ -28,12 +28,13 @@ class Citation:
     doc_id: str
     chunk_id: str
     chunk_index: int
-    snippet: str
+    snippet: str  # Truncated text for UI display
     score: float  # Similarity score (lower = more similar for cosine distance)
     document_title: str
+    text: str = ""  # Full chunk text for LLM context
     
     def to_dict(self) -> dict:
-        """Convert to JSON-serializable dict."""
+        """Convert to JSON-serializable dict (excludes full text for response size)."""
         return {
             "docId": self.doc_id,
             "chunkId": self.chunk_id,
@@ -168,6 +169,7 @@ def retrieve_chunks(
                 snippet=create_snippet(text),
                 score=float(distance),
                 document_title=doc_title,
+                text=text,  # Full text for LLM context
             )
             citations.append(citation)
     
@@ -177,6 +179,107 @@ def retrieve_chunks(
     )
     
     return citations
+
+
+@dataclass
+class RetrievalCandidate:
+    """
+    A retrieval candidate with full text for reranking.
+    
+    Similar to Citation but includes full chunk text.
+    """
+    doc_id: str
+    chunk_id: str
+    chunk_index: int
+    text: str  # Full chunk text
+    snippet: str
+    vector_score: float
+    document_title: str
+    
+    def to_citation(self) -> Citation:
+        """Convert to Citation (drops full text)."""
+        return Citation(
+            doc_id=self.doc_id,
+            chunk_id=self.chunk_id,
+            chunk_index=self.chunk_index,
+            snippet=self.snippet,
+            score=self.vector_score,
+            document_title=self.document_title,
+        )
+
+
+def retrieve_chunks_for_reranking(
+    query_embedding: List[float],
+    user_id: str,
+    top_k: int = DEFAULT_TOP_K,
+) -> List[RetrievalCandidate]:
+    """
+    Retrieve top-k candidates for reranking (includes full text).
+    
+    Similar to retrieve_chunks but returns full chunk text for reranker.
+    
+    Args:
+        query_embedding: Vector embedding of the user's query
+        user_id: Keycloak user ID (sub claim) for scoping
+        top_k: Number of chunks to retrieve
+        
+    Returns:
+        List of RetrievalCandidate objects with full text
+    """
+    # Convert embedding to PostgreSQL array literal
+    embedding_str = '[' + ','.join(str(x) for x in query_embedding) + ']'
+    
+    # Build the query with user scoping and status filter
+    sql = """
+        SELECT 
+            c.id AS chunk_id,
+            c.document_id,
+            c.chunk_index,
+            c.text,
+            d.filename AS document_title,
+            c.embedding <=> %s::vector AS distance
+        FROM doc_chunks c
+        INNER JOIN documents d ON c.document_id = d.id
+        WHERE d.owner_user_id = %s
+          AND d.status = %s
+          AND c.embedding IS NOT NULL
+        ORDER BY c.embedding <=> %s::vector
+        LIMIT %s
+    """
+    
+    params = [
+        embedding_str,
+        user_id,
+        DocumentStatus.INDEXED,
+        embedding_str,
+        top_k,
+    ]
+    
+    candidates = []
+    
+    with connection.cursor() as cursor:
+        cursor.execute(sql, params)
+        rows = cursor.fetchall()
+        
+        for row in rows:
+            chunk_id, doc_id, chunk_index, text, doc_title, distance = row
+            
+            candidate = RetrievalCandidate(
+                doc_id=str(doc_id),
+                chunk_id=str(chunk_id),
+                chunk_index=chunk_index,
+                text=text,  # Full text for reranking
+                snippet=create_snippet(text),
+                vector_score=float(distance),
+                document_title=doc_title,
+            )
+            candidates.append(candidate)
+    
+    logger.info(
+        f"Retrieved {len(candidates)} candidates for reranking, user {user_id}"
+    )
+    
+    return candidates
 
 
 def retrieve_for_query(

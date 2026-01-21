@@ -40,3 +40,13 @@ pytest-asyncio>=0.21
 black>=23.0
 flake8>=6.0
 httpx>=0.25
+
+# =============================================================================
+# Cross-Encoder Reranker (optional feature)
+# =============================================================================
+# sentence-transformers for CrossEncoder model
+sentence-transformers>=2.2.0
+
+# PyTorch - CPU version (GPU optional via CUDA-enabled torch)
+# On GPU systems, install torch with CUDA support instead
+torch>=2.0.0

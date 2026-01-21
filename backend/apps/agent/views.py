@@ -65,10 +65,15 @@ class AgentRunView(View):
         mode = body.get("mode", "agent")
         return_trace = body.get("returnTrace", False)
         refine_prompt = body.get("refine_prompt", False)
+        rerank = body.get("rerank", False)
         
         # Validate refine_prompt
         if not isinstance(refine_prompt, bool):
             refine_prompt = False
+        
+        # Validate rerank
+        if not isinstance(rerank, bool):
+            rerank = False
         
         # Validate question
         if not question or not question.strip():
@@ -115,7 +120,7 @@ class AgentRunView(View):
                     logger.info("Agent: Query refinement failed, using original question")
             
             # Execute agent (use retrieval_question for search, original for final answer)
-            result = run_agent(retrieval_question, user_id)
+            result = run_agent(retrieval_question, user_id, rerank=rerank)
             
             # Audit log
             log_audit_from_request(
@@ -182,10 +187,15 @@ class AgentStreamView(View):
         
         question = body.get("question", "")
         refine_prompt = body.get("refine_prompt", False)
+        rerank = body.get("rerank", False)
         
         # Validate refine_prompt
         if not isinstance(refine_prompt, bool):
             refine_prompt = False
+        
+        # Validate rerank
+        if not isinstance(rerank, bool):
+            rerank = False
         
         # Validate question
         if not question or not question.strip():
@@ -229,7 +239,7 @@ class AgentStreamView(View):
                     logger.info("Agent stream: Query refinement failed, using original question")
             
             try:
-                for item in run_agent_streaming(retrieval_question, user_id):
+                for item in run_agent_streaming(retrieval_question, user_id, rerank=rerank):
                     if isinstance(item, TraceEntry):
                         # Stream trace entry
                         final_trace.append(item)
