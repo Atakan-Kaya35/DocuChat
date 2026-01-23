@@ -160,6 +160,15 @@ class GeminiClient(BaseLLMClient):
         """Send chat request to Gemini API."""
         logger.info(f"Calling Gemini API: model={self.model}, temp={temperature}")
         
+        # Gemini "thinking" models (like gemini-3-pro-preview) use internal reasoning tokens.
+        # We need to ensure enough tokens for both thinking and response.
+        # Apply a minimum of 1000 tokens for thinking models.
+        effective_max_tokens = max_tokens
+        if "preview" in self.model or "thinking" in self.model or "-3-" in self.model:
+            effective_max_tokens = max(max_tokens, 1000)
+            if effective_max_tokens != max_tokens:
+                logger.debug(f"Adjusted max_tokens from {max_tokens} to {effective_max_tokens} for thinking model")
+        
         # Convert messages to Gemini format
         # Gemini uses "contents" with "parts" structure
         # System messages need to be handled separately
@@ -183,7 +192,7 @@ class GeminiClient(BaseLLMClient):
             "contents": gemini_contents,
             "generationConfig": {
                 "temperature": temperature,
-                "maxOutputTokens": max_tokens,
+                "maxOutputTokens": effective_max_tokens,
                 "topP": 0.95,
             }
         }

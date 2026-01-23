@@ -59,7 +59,7 @@ services:
       dockerfile: Dockerfile
     container_name: docuchat-backend
     env_file:
-      - ./backend/.env.api.sample
+      - ./backend/.env
     volumes:
       - backend_uploads:/data/uploads
       - backend_extracted:/data/extracted
@@ -92,7 +92,7 @@ services:
     container_name: docuchat-worker
     command: ["python", "manage.py", "run_worker"]
     env_file:
-      - ./backend/.env.api.sample
+      - ./backend/.env
     volumes:
       - backend_uploads:/data/uploads
       - backend_extracted:/data/extracted
