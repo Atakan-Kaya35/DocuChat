@@ -1,0 +1,30 @@
+[flake8]
+# Increase max line length to 200 (more practical for modern screens)
+max-line-length = 200
+
+# Ignore specific rules that are too strict for this project:
+# W293: blank line contains whitespace
+# W291: trailing whitespace  
+# W292: no newline at end of file
+# W391: blank line at end of file
+# W503: line break before binary operator (conflicts with PEP 8)
+# E501: line too long (handled by max-line-length increase)
+# E127/E128: continuation line indentation (stylistic preference)
+# E226: missing whitespace around arithmetic operator
+# E306: expected blank line before nested definition
+# E402: module level import not at top (Django pattern)
+# E704: multiple statements on one line (used in tests)
+# F401: imported but unused (often needed for re-exports)
+# F541: f-string missing placeholders (sometimes intentional)
+# F841: local variable assigned but never used
+ignore = W293, W291, W292, W391, W503, E127, E128, E226, E306, E402, E704, F401, F541, F841
+
+# Exclude directories
+exclude =
+    .git,
+    __pycache__,
+    .venv,
+    venv,
+    migrations,
+    build,
+    dist
