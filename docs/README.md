@@ -87,10 +87,46 @@ Default test user credentials (created by Keycloak realm import):
 - **Username:** `testuser`
 - **Password:** `testpassword`
 
-Or create a new user via Keycloak admin console:
-1. Go to http://localhost/auth/admin
-2. Login with `admin` / `admin` (default)
-3. Select "docuchat" realm → Users → Add user
+---
+
+## LLM API Mode (External APIs)
+
+For environments without GPU resources or when you want to use more capable models, DocuChat supports using external LLM APIs (Google Gemini, OpenAI, etc.) for chat/reasoning while keeping Ollama only for document embeddings.
+
+### Benefits
+- No GPU required for LLM inference
+- Faster startup (no large model downloads)
+- Access to latest models (GPT-4, Gemini 2.0, etc.)
+- Reduced memory footprint
+
+### Setup Steps
+
+1. **Copy API environment file:**
+   ```bash
+   cp backend/.env.api.sample backend/.env
+   ```
+
+2. **Configure your API keys** in `backend/.env`:
+   - For Google Gemini: Set `GEMINI_API_KEY` and `GEMINI_MODEL`
+   - For OpenAI: Set `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `OPENAI_MODEL`
+   - Works with Azure OpenAI, Groq, Together AI, and other OpenAI-compatible APIs
+
+3. **Start services with API mode:**
+   ```bash
+   docker compose -f docker-compose-api.yml up -d
+   ```
+
+**First run takes 5-10 minutes** to pull images and download the embedding model (~500MB for nomic-embed-text).
+
+### Supported Providers
+
+| Provider | Configuration | Recommended Model |
+|----------|---------------|-------------------|
+| Google Gemini | `LLM_PROVIDER=gemini` | `gemini-1.5-flash` |
+| OpenAI | `LLM_PROVIDER=openai` | `gpt-4o-mini` |
+| Azure OpenAI | `LLM_PROVIDER=openai` | Custom deployment |
+| Groq | `LLM_PROVIDER=openai` | `llama-3.3-70b-versatile` |
+| Together AI | `LLM_PROVIDER=openai` | `meta-llama/Llama-3.3-70B-Instruct-Turbo` |
 
 ---
 
