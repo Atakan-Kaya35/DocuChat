@@ -206,10 +206,10 @@ RERANK_KEEP_N = int(os.getenv('RERANK_KEEP_N', '8'))
 # File Upload Configuration
 # =============================================================================
 # Root directory for uploaded files
-UPLOAD_ROOT = Path(os.getenv('UPLOAD_ROOT', '/data/uploads'))
+UPLOAD_ROOT = Path(os.getenv('UPLOAD_ROOT', BASE_DIR / 'uploads'))
 
 # Root directory for extracted text files (sidecar files)
-EXTRACTED_ROOT = Path(os.getenv('EXTRACTED_ROOT', '/data/extracted'))
+EXTRACTED_ROOT = Path(os.getenv('EXTRACTED_ROOT', BASE_DIR / 'extracted'))
 
 # Maximum file size in bytes (50MB default)
 MAX_UPLOAD_SIZE = int(os.getenv('MAX_UPLOAD_SIZE', 50 * 1024 * 1024))
