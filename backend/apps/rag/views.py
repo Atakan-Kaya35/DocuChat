@@ -253,9 +253,9 @@ class AskView(View):
             )
         
         # Validate max_tokens
-        if not isinstance(max_tokens, int) or max_tokens < 50 or max_tokens > 2000:
+        if not isinstance(max_tokens, int) or max_tokens < 50 or max_tokens > 8000:
             return JsonResponse(
-                {"error": "maxTokens must be an integer between 50 and 2000"},
+                {"error": "maxTokens must be an integer between 50 and 8000"},
                 status=400
             )
         

@@ -325,6 +325,45 @@ class OpenedCitation:
     citation_num: int  # [1], [2], etc.
 
 
+def find_full_uuid_from_prefix(prefix: str, known_uuids: List[str]) -> Optional[str]:
+    """
+    Try to find a full UUID that starts with the given prefix.
+    
+    LLMs sometimes truncate UUIDs. This helps recover the full UUID
+    from search results when only a prefix is provided.
+    
+    Args:
+        prefix: Potentially truncated UUID string
+        known_uuids: List of full UUIDs from search results
+        
+    Returns:
+        Full UUID if a unique match is found, None otherwise
+    """
+    if not prefix or len(prefix) < 8:
+        return None
+    
+    prefix_clean = prefix.strip().lower()
+    
+    # First check for exact match
+    for uuid in known_uuids:
+        if uuid.lower() == prefix_clean:
+            return uuid
+    
+    # Then check for prefix match
+    matches = [uuid for uuid in known_uuids if uuid.lower().startswith(prefix_clean)]
+    
+    if len(matches) == 1:
+        return matches[0]
+    
+    # Also try contains match (in case LLM grabbed middle portion)
+    if len(matches) == 0 and len(prefix_clean) >= 12:
+        matches = [uuid for uuid in known_uuids if prefix_clean in uuid.lower()]
+        if len(matches) == 1:
+            return matches[0]
+    
+    return None
+
+
 class AgentState:
     """
     Enhanced agent state with constraint tracking.
@@ -398,6 +437,41 @@ class AgentState:
             missing=missing,
             queries_tried=list(self._search_queries),
         ))
+    
+    def get_known_doc_ids(self) -> List[str]:
+        """Get all doc IDs from search results."""
+        return list(set(r.doc_id for r in self.search_results))
+    
+    def get_known_chunk_ids(self) -> List[str]:
+        """Get all chunk IDs from search results."""
+        return list(set(r.chunk_id for r in self.search_results))
+    
+    def find_chunk_by_doc_and_index(self, doc_id: str, chunk_index: int) -> Optional[SearchResultItem]:
+        """Find a search result by doc ID (or prefix) and chunk index."""
+        # Try exact match first
+        for r in self.search_results:
+            if r.doc_id == doc_id and r.chunk_index == chunk_index:
+                return r
+        
+        # Try prefix match on doc_id
+        full_doc_id = find_full_uuid_from_prefix(doc_id, self.get_known_doc_ids())
+        if full_doc_id:
+            for r in self.search_results:
+                if r.doc_id == full_doc_id and r.chunk_index == chunk_index:
+                    return r
+        
+        return None
+    
+    def resolve_truncated_ids(self, doc_id: str, chunk_id: str) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Try to resolve potentially truncated UUIDs to full UUIDs.
+        
+        Returns:
+            (resolved_doc_id, resolved_chunk_id) - either may be None if not found
+        """
+        resolved_doc = find_full_uuid_from_prefix(doc_id, self.get_known_doc_ids())
+        resolved_chunk = find_full_uuid_from_prefix(chunk_id, self.get_known_chunk_ids())
+        return resolved_doc, resolved_chunk
     
     def to_snapshot(self) -> AgentStateSnapshot:
         """Create a snapshot for validation."""
@@ -490,17 +564,31 @@ AVAILABLE TOOLS:
    
 2. open_citation - Read full text of a chunk (REQUIRED before citing)
    Input: {"docId": "FULL-UUID-HERE", "chunkId": "FULL-UUID-HERE"}
-   IMPORTANT: You MUST use the COMPLETE UUID strings shown in search results.
-   UUIDs look like: "c5bd8bfc-1234-5678-abcd-1234567890ab" (36 characters with dashes)
-   Do NOT truncate or shorten the UUIDs!
+
+*** UUID HANDLING - EXTREMELY IMPORTANT ***
+- UUIDs are EXACTLY 36 characters with 4 dashes: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+- Example: "c5bd8bfc-1234-5678-abcd-1234567890ab"
+- COPY THE COMPLETE UUID from search results - every character matters!
+- If you truncate a UUID (e.g., "c5bd8bfc-1234-5678-a"), the tool will FAIL
+- When you see docId=abc123..., copy the ENTIRE value, not just the visible part
+
+WORKFLOW:
+1. Search for relevant information with search_docs
+2. For EACH relevant search result, call open_citation with the COMPLETE UUIDs
+3. Open AT LEAST 2-3 citations before trying to answer
+4. Only give FINAL answer after opening citations that contain the needed info
+5. If a tool call fails, try a different search result
 
 CRITICAL RULES:
-1. You MUST call open_citation before you can cite a source in your final answer
-2. Use the FULL docId and chunkId from search results - do not truncate!
+1. You MUST call open_citation before citing - snippets are NOT enough
+2. NEVER give FINAL with 0 citations opened unless search truly found nothing
 3. Citation numbers [1], [2] must match opened citations
 4. Do NOT include information not found in opened citations
 5. If information is missing, include it in "insufficiencies"
-6. Say "I don't know based on the provided documents" if nothing relevant found
+6. Say "I don't know based on the provided documents" ONLY if:
+   - You searched multiple queries AND
+   - None of the search results were relevant AND
+   - Opening citations confirmed no useful information
 7. NEVER invent tools, commands, or procedures not in the documents"""
 
 
@@ -625,17 +713,55 @@ def execute_tool(
             if not doc_id or not chunk_id:
                 return False, "docId and chunkId are required"
             
-            result = open_citation(doc_id, chunk_id, user_id)
-            state.add_opened_citation(result)
+            # Try to resolve potentially truncated UUIDs
+            original_doc_id, original_chunk_id = doc_id, chunk_id
+            resolved_doc, resolved_chunk = state.resolve_truncated_ids(doc_id, chunk_id)
             
-            trace.append(TraceEntry(
-                type=TraceType.TOOL_CALL,
-                tool='open_citation',
-                input={'docId': doc_id[:20], 'chunkId': chunk_id[:20]},
-                output_summary=result.summary()
-            ))
+            if resolved_doc and resolved_chunk:
+                doc_id = resolved_doc
+                chunk_id = resolved_chunk
+                if doc_id != original_doc_id or chunk_id != original_chunk_id:
+                    logger.info(f"Resolved truncated UUIDs: doc {original_doc_id[:20]}... -> {doc_id[:20]}..., chunk {original_chunk_id[:20]}... -> {chunk_id[:20]}...")
+            elif resolved_doc and not resolved_chunk:
+                # Try to find by doc_id and infer chunk from search results
+                doc_id = resolved_doc
+                for r in state.search_results:
+                    if r.doc_id == doc_id:
+                        chunk_id = r.chunk_id
+                        logger.info(f"Resolved doc UUID and picked first matching chunk: {chunk_id[:20]}...")
+                        break
             
-            return True, result.summary()
+            try:
+                result = open_citation(doc_id, chunk_id, user_id)
+                state.add_opened_citation(result)
+                
+                trace.append(TraceEntry(
+                    type=TraceType.TOOL_CALL,
+                    tool='open_citation',
+                    input={'docId': doc_id[:20], 'chunkId': chunk_id[:20]},
+                    output_summary=result.summary()
+                ))
+                
+                return True, result.summary()
+                
+            except ToolValidationError as e:
+                # Provide helpful error message with available options
+                available_chunks = []
+                for r in state.search_results[:5]:
+                    available_chunks.append(f"docId={r.doc_id}, chunkId={r.chunk_id}, file={r.filename}")
+                
+                error_msg = str(e)
+                if available_chunks:
+                    error_msg += f"\n\nAvailable chunks from search results:\n" + "\n".join(available_chunks)
+                    error_msg += "\n\nPlease use the COMPLETE UUIDs shown above."
+                
+                trace.append(TraceEntry(
+                    type=TraceType.ERROR,
+                    tool='open_citation',
+                    error=f"UUID resolution failed: {str(e)[:80]}"
+                ))
+                state.notes.append(f"open_citation failed - try using complete UUIDs from search results")
+                return False, error_msg
             
         else:
             trace.append(TraceEntry(
@@ -911,6 +1037,50 @@ def run_agent_v2(question: str, user_id: str, rerank: bool = False) -> AgentResu
             # ================================================================
             # VALIDATION GATE
             # ================================================================
+            
+            # Safety check: If agent tries to finalize with no opened citations
+            # but we have search results, auto-open the top results first
+            if (len(state.opened_citations) == 0 and 
+                len(state.search_results) > 0 and 
+                state.remaining_tool_budget > 0):
+                
+                logger.info("Agent attempted FINAL with no opened citations - auto-opening top search results")
+                trace.append(TraceEntry(
+                    type=TraceType.TOOL_CALL,
+                    tool="auto_open",
+                    notes="Auto-opening top search results before finalization"
+                ))
+                
+                # Auto-open up to 3 top search results
+                opened_count = 0
+                for r in state.search_results[:3]:
+                    if state.remaining_tool_budget <= 0:
+                        break
+                    try:
+                        result = open_citation(r.doc_id, r.chunk_id, user_id)
+                        state.add_opened_citation(result)
+                        state.tool_calls_used += 1
+                        opened_count += 1
+                        
+                        trace.append(TraceEntry(
+                            type=TraceType.TOOL_CALL,
+                            tool='open_citation',
+                            input={'docId': r.doc_id[:20], 'chunkId': r.chunk_id[:20]},
+                            output_summary=result.summary()
+                        ))
+                    except Exception as e:
+                        logger.warning(f"Auto-open failed for chunk {r.chunk_id}: {e}")
+                        continue
+                
+                if opened_count > 0:
+                    # Force a re-synthesis with the newly opened citations
+                    reprompt_message = (
+                        f"I have now opened {opened_count} citation(s) for you. "
+                        "Please review the OPENED CITATIONS section and provide a proper answer "
+                        "using the information found there. Include citation markers [1], [2] etc."
+                    )
+                    continue  # Go back to get new response with citations
+            
             snapshot = state.to_snapshot()
             
             # Extract citation refs for validation
@@ -1180,6 +1350,49 @@ def run_agent_v2_streaming(question: str, user_id: str, rerank: bool = False) ->
             continue
         
         if action.action_type == "final" and action.final:
+            # Safety check: auto-open top search results if none opened
+            if (len(state.opened_citations) == 0 and 
+                len(state.search_results) > 0 and 
+                state.remaining_tool_budget > 0):
+                
+                logger.info("Agent attempted FINAL with no opened citations - auto-opening top search results")
+                auto_open_entry = TraceEntry(
+                    type=TraceType.TOOL_CALL,
+                    tool="auto_open",
+                    notes="Auto-opening top search results before finalization"
+                )
+                trace.append(auto_open_entry)
+                yield auto_open_entry
+                
+                opened_count = 0
+                for r in state.search_results[:3]:
+                    if state.remaining_tool_budget <= 0:
+                        break
+                    try:
+                        result = open_citation(r.doc_id, r.chunk_id, user_id)
+                        state.add_opened_citation(result)
+                        state.tool_calls_used += 1
+                        opened_count += 1
+                        
+                        open_entry = TraceEntry(
+                            type=TraceType.TOOL_CALL,
+                            tool='open_citation',
+                            input={'docId': r.doc_id[:20], 'chunkId': r.chunk_id[:20]},
+                            output_summary=result.summary()
+                        )
+                        trace.append(open_entry)
+                        yield open_entry
+                    except Exception as e:
+                        logger.warning(f"Auto-open failed for chunk {r.chunk_id}: {e}")
+                        continue
+                
+                if opened_count > 0:
+                    reprompt_message = (
+                        f"I have now opened {opened_count} citation(s) for you. "
+                        "Please review the OPENED CITATIONS section and provide a proper answer."
+                    )
+                    continue
+            
             snapshot = state.to_snapshot()
             citation_refs = [int(r) for r in re.findall(r'\[(\d+)\]', action.final.answer)]
             

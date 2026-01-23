@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 # Default chat parameters
 DEFAULT_TEMPERATURE = 0.2  # Low for factuality
-DEFAULT_MAX_TOKENS = 500
+DEFAULT_MAX_TOKENS = 1500
 
 
 class ChatError(Exception):
