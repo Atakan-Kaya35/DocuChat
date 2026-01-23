@@ -677,28 +677,18 @@ def execute_tool(
 
 def call_llm(prompt: str, max_tokens: int = 600) -> str:
     """Call LLM and return response text."""
-    ollama_url = getattr(settings, 'OLLAMA_BASE_URL', 'http://ollama:11434')
-    chat_model = getattr(settings, 'OLLAMA_CHAT_MODEL', 'llama3.2')
-    chat_timeout = getattr(settings, 'OLLAMA_CHAT_TIMEOUT', 600)
+    from apps.rag.llm_client import get_llm_client, LLMMessage, LLMError
     
-    logger.debug(f"Calling LLM (model={chat_model}, timeout={chat_timeout}s)")
+    client = get_llm_client()
+    logger.debug(f"Calling LLM (model={client.model_name}, max_tokens={max_tokens})")
     
-    with httpx.Client(timeout=float(chat_timeout)) as client:
-        response = client.post(
-            f"{ollama_url}/api/chat",
-            json={
-                "model": chat_model,
-                "messages": [{"role": "user", "content": prompt}],
-                "stream": False,
-                "options": {
-                    "temperature": 0.1,  # Low temp for predictable JSON
-                    "num_predict": max_tokens,
-                }
-            }
-        )
-        response.raise_for_status()
-        data = response.json()
-        return data.get("message", {}).get("content", "")
+    try:
+        messages = [LLMMessage(role="user", content=prompt)]
+        response = client.chat(messages, temperature=0.1, max_tokens=max_tokens)
+        return response.content
+    except LLMError as e:
+        logger.error(f"LLM call failed: {e}")
+        raise
 
 
 # ============================================================================

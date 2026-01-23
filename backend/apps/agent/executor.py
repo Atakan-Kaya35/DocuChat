@@ -7,6 +7,8 @@ Runs the bounded agent loop with strict action format:
 3. Synthesize final answer with grounded citations
 
 See OPERATIONS.md for limits and behavior.
+
+Supports multiple LLM providers via the llm_client abstraction.
 """
 import json
 import logging
@@ -15,7 +17,6 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Tuple
 from enum import Enum
 
-import httpx
 from django.conf import settings
 
 from apps.agent.planner import generate_plan, Plan
@@ -447,28 +448,18 @@ def execute_tool(
 
 def call_llm(prompt: str, max_tokens: int = 500) -> str:
     """Call LLM and return response text."""
-    ollama_url = getattr(settings, 'OLLAMA_BASE_URL', 'http://ollama:11434')
-    chat_model = getattr(settings, 'OLLAMA_CHAT_MODEL', 'llama3.2')
-    chat_timeout = getattr(settings, 'OLLAMA_CHAT_TIMEOUT', 600)  # 10 min default
+    from apps.rag.llm_client import get_llm_client, LLMMessage, LLMError
     
-    logger.debug(f"Calling LLM (model={chat_model}, timeout={chat_timeout}s, max_tokens={max_tokens})")
+    client = get_llm_client()
+    logger.debug(f"Calling LLM (model={client.model_name}, max_tokens={max_tokens})")
     
-    with httpx.Client(timeout=float(chat_timeout)) as client:
-        response = client.post(
-            f"{ollama_url}/api/chat",
-            json={
-                "model": chat_model,
-                "messages": [{"role": "user", "content": prompt}],
-                "stream": False,
-                "options": {
-                    "temperature": 0.1,  # Low temp for predictable format
-                    "num_predict": max_tokens,
-                }
-            }
-        )
-        response.raise_for_status()
-        data = response.json()
-        return data.get("message", {}).get("content", "")
+    try:
+        messages = [LLMMessage(role="user", content=prompt)]
+        response = client.chat(messages, temperature=0.1, max_tokens=max_tokens)
+        return response.content
+    except LLMError as e:
+        logger.error(f"LLM call failed: {e}")
+        raise
 
 
 # ============================================================================

@@ -144,7 +144,19 @@ CHANNEL_LAYERS = {
 }
 
 # =============================================================================
-# Ollama
+# LLM Provider Configuration
+# =============================================================================
+# LLM_PROVIDER determines which backend to use for chat/reasoning:
+#   - "ollama" (default): Local Ollama inference
+#   - "gemini": Google Gemini API
+#   - "openai": OpenAI or compatible API (Azure, Groq, Together, etc.)
+#
+# Note: Embeddings ALWAYS use Ollama (nomic-embed-text) regardless of provider
+# =============================================================================
+LLM_PROVIDER = os.getenv('LLM_PROVIDER', 'ollama')
+
+# =============================================================================
+# Ollama Configuration (for embeddings, and LLM if LLM_PROVIDER=ollama)
 # =============================================================================
 OLLAMA_BASE_URL = os.getenv('OLLAMA_BASE_URL', 'http://ollama:11434')
 OLLAMA_EMBED_MODEL = os.getenv('OLLAMA_EMBED_MODEL', 'nomic-embed-text')
@@ -155,6 +167,22 @@ OLLAMA_CHAT_MODEL = os.getenv('OLLAMA_CHAT_MODEL', 'gemma:7b')
 OLLAMA_PLAN_TIMEOUT = int(os.getenv('OLLAMA_PLAN_TIMEOUT', '300'))  # 5 min
 OLLAMA_CHAT_TIMEOUT = int(os.getenv('OLLAMA_CHAT_TIMEOUT', '600'))  # 10 min
 OLLAMA_EMBED_TIMEOUT = int(os.getenv('OLLAMA_EMBED_TIMEOUT', '120'))  # 2 min
+
+# =============================================================================
+# Gemini API Configuration (used when LLM_PROVIDER=gemini)
+# =============================================================================
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
+GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-1.5-flash')
+GEMINI_TIMEOUT = int(os.getenv('GEMINI_TIMEOUT', '120'))  # 2 min
+
+# =============================================================================
+# OpenAI-Compatible API Configuration (used when LLM_PROVIDER=openai)
+# Works with: OpenAI, Azure OpenAI, Groq, Together AI, local servers, etc.
+# =============================================================================
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
+OPENAI_BASE_URL = os.getenv('OPENAI_BASE_URL', 'https://api.openai.com/v1')
+OPENAI_MODEL = os.getenv('OPENAI_MODEL', 'gpt-4o-mini')
+OPENAI_TIMEOUT = int(os.getenv('OPENAI_TIMEOUT', '120'))  # 2 min
 
 # Query Refinement Feature (optional)
 # When enabled at server level, the refine_prompt toggle in UI will work

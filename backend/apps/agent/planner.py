@@ -3,6 +3,8 @@ Agent planning module.
 
 Generates bounded 2-5 step plans for answering questions.
 Validates plan output and falls back to safe default if parsing fails.
+
+Supports multiple LLM providers via the llm_client abstraction.
 """
 import json
 import logging
@@ -10,8 +12,9 @@ import re
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-import httpx
 from django.conf import settings
+
+from apps.rag.llm_client import get_llm_client, LLMMessage, LLMError
 
 logger = logging.getLogger(__name__)
 
@@ -178,52 +181,35 @@ def generate_plan(question: str) -> Plan:
         logger.warning("Empty question, using default plan")
         return Plan(steps=DEFAULT_PLAN.copy(), is_fallback=True)
     
-    ollama_url = getattr(settings, 'OLLAMA_BASE_URL', 'http://ollama:11434')
-    chat_model = getattr(settings, 'OLLAMA_CHAT_MODEL', 'llama3.2')
-    plan_timeout = getattr(settings, 'OLLAMA_PLAN_TIMEOUT', 300)  # 5 min default
-    
     prompt = f"{PLAN_SYSTEM_PROMPT}\n\nQuestion: {question}"
     
-    logger.info(f"Generating plan for question: {question[:100]}... (timeout: {plan_timeout}s)")
+    logger.info(f"Generating plan for question: {question[:100]}...")
     
     try:
-        with httpx.Client(timeout=float(plan_timeout)) as client:
-            response = client.post(
-                f"{ollama_url}/api/chat",
-                json={
-                    "model": chat_model,
-                    "messages": [
-                        {"role": "user", "content": prompt}
-                    ],
-                    "stream": False,
-                    "options": {
-                        "temperature": 0.3,  # Low for consistent plans
-                        "num_predict": 300,  # Plans are short
-                    }
-                }
-            )
-            response.raise_for_status()
-            data = response.json()
-            
-            content = data.get("message", {}).get("content", "")
-            if not content:
-                raise PlanningError("Empty response from LLM")
-            
-            logger.debug(f"Plan LLM response: {content}")
-            
-            # Parse and validate
-            steps = parse_plan_response(content)
-            steps = validate_plan(steps)
-            
-            logger.info(f"Generated plan with {len(steps)} steps")
-            return Plan(steps=steps, is_fallback=False)
-            
-    except httpx.HTTPStatusError as e:
+        client = get_llm_client()
+        messages = [LLMMessage(role="user", content=prompt)]
+        
+        response = client.chat(
+            messages,
+            temperature=0.3,  # Low for consistent plans
+            max_tokens=300,   # Plans are short
+        )
+        
+        content = response.content
+        if not content:
+            raise PlanningError("Empty response from LLM")
+        
+        logger.debug(f"Plan LLM response: {content}")
+        
+        # Parse and validate
+        steps = parse_plan_response(content)
+        steps = validate_plan(steps)
+        
+        logger.info(f"Generated plan with {len(steps)} steps")
+        return Plan(steps=steps, is_fallback=False)
+        
+    except LLMError as e:
         logger.error(f"LLM request failed: {e}")
-    except httpx.TimeoutException:
-        logger.error("LLM request timed out")
-    except httpx.RequestError as e:
-        logger.error(f"LLM connection error: {e}")
     except ValueError as e:
         logger.warning(f"Plan parsing failed: {e}")
     except Exception as e:

@@ -1,18 +1,25 @@
 """
 LLM Chat service for RAG.
 
-Handles prompt construction and Ollama chat API calls
+Handles prompt construction and LLM API calls
 with strict citation-friendly rules.
+
+Supports multiple LLM providers via the llm_client abstraction.
 """
 import logging
 import re
 from dataclasses import dataclass
 from typing import List, Optional
 
-import httpx
 from django.conf import settings
 
 from apps.rag.retrieval import Citation, RetrievalResult
+from apps.rag.llm_client import (
+    get_llm_client,
+    get_model_name,
+    LLMMessage,
+    LLMError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -90,14 +97,16 @@ class ChatResponse:
         }
 
 
-def call_ollama_chat(
+def call_llm_chat(
     question: str,
     system_prompt: str,
     temperature: float = DEFAULT_TEMPERATURE,
     max_tokens: int = DEFAULT_MAX_TOKENS,
 ) -> str:
     """
-    Call Ollama chat API for completion.
+    Call LLM API for chat completion.
+    
+    Uses the configured LLM provider (Ollama, Gemini, or OpenAI).
     
     Args:
         question: User's question
@@ -111,57 +120,24 @@ def call_ollama_chat(
     Raises:
         ChatError: If the API call fails
     """
-    ollama_url = getattr(settings, 'OLLAMA_BASE_URL', 'http://ollama:11434')
-    chat_model = getattr(settings, 'OLLAMA_CHAT_MODEL', 'llama3.2')
-    chat_timeout = getattr(settings, 'OLLAMA_CHAT_TIMEOUT', 600)  # 10 min default
-    
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": question},
-    ]
-    
-    logger.info(f"Calling Ollama chat with model={chat_model}, temp={temperature}, timeout={chat_timeout}s")
-    logger.debug(f"System prompt length: {len(system_prompt)} chars")
-    
     try:
-        with httpx.Client(timeout=float(chat_timeout)) as client:
-            response = client.post(
-                f"{ollama_url}/api/chat",
-                json={
-                    "model": chat_model,
-                    "messages": messages,
-                    "stream": False,
-                    "options": {
-                        "temperature": temperature,
-                        "num_predict": max_tokens,
-                    }
-                }
-            )
-            response.raise_for_status()
-            data = response.json()
-            
-            # Extract response content
-            message = data.get("message", {})
-            content = message.get("content", "")
-            
-            if not content:
-                raise ChatError("Empty response from LLM")
-            
-            logger.info(f"LLM response received: {len(content)} chars")
-            return content
-            
-    except httpx.HTTPStatusError as e:
-        logger.error(f"Ollama chat request failed: {e}")
-        raise ChatError(f"Chat service error: {e.response.status_code}")
-    except httpx.TimeoutException:
-        logger.error("Ollama chat request timed out")
-        raise ChatError("Chat service timed out")
-    except httpx.RequestError as e:
-        logger.error(f"Ollama connection error: {e}")
-        raise ChatError("Could not connect to chat service")
-    except (KeyError, TypeError) as e:
-        logger.error(f"Unexpected Ollama response format: {e}")
-        raise ChatError("Invalid response from chat service")
+        client = get_llm_client()
+        messages = [
+            LLMMessage(role="system", content=system_prompt),
+            LLMMessage(role="user", content=question),
+        ]
+        
+        logger.info(f"Calling LLM chat: model={client.model_name}, temp={temperature}")
+        logger.debug(f"System prompt length: {len(system_prompt)} chars")
+        
+        response = client.chat(messages, temperature=temperature, max_tokens=max_tokens)
+        
+        logger.info(f"LLM response received: {len(response.content)} chars")
+        return response.content
+        
+    except LLMError as e:
+        logger.error(f"LLM chat request failed: {e}")
+        raise ChatError(str(e))
 
 
 # Default response when no context is available
@@ -189,7 +165,7 @@ def generate_answer(
     Returns:
         ChatResponse with answer and citations
     """
-    chat_model = getattr(settings, 'OLLAMA_CHAT_MODEL', 'llama3.2')
+    model_name = get_model_name()
     
     # Safety rail: no context means no LLM call
     if not retrieval_result.citations:
@@ -197,7 +173,7 @@ def generate_answer(
         return ChatResponse(
             answer=NO_CONTEXT_ANSWER,
             citations=[],
-            model=chat_model,
+            model=model_name,
         )
     
     # Build prompt with context
@@ -207,7 +183,7 @@ def generate_answer(
     logger.debug(f"Full prompt:\n{system_prompt}")
     
     # Call LLM
-    answer = call_ollama_chat(
+    answer = call_llm_chat(
         question=question,
         system_prompt=system_prompt,
         temperature=temperature,
@@ -217,5 +193,5 @@ def generate_answer(
     return ChatResponse(
         answer=answer,
         citations=retrieval_result.citations,
-        model=chat_model,
+        model=model_name,
     )

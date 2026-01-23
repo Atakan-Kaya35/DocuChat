@@ -9,6 +9,8 @@ Key features:
 - Silent fallback to original query on any failure
 - Low temperature for consistent output
 - Short timeout to avoid blocking
+
+Supports multiple LLM providers via the llm_client abstraction.
 """
 import json
 import logging
@@ -16,8 +18,9 @@ import re
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
 
-import httpx
 from django.conf import settings
+
+from apps.rag.llm_client import get_llm_client, LLMMessage, LLMError
 
 logger = logging.getLogger(__name__)
 
@@ -225,60 +228,40 @@ def rewrite_query(
         doc_titles_list=doc_titles_str,
     )
     
-    # Get LLM settings
-    ollama_url = getattr(settings, 'OLLAMA_BASE_URL', 'http://ollama:11434')
-    chat_model = getattr(settings, 'OLLAMA_CHAT_MODEL', 'llama3.2')
-    
-    logger.debug(f"Query rewriter: Calling LLM (model={chat_model})")
-    
     try:
-        with httpx.Client(timeout=float(REWRITE_TIMEOUT)) as client:
-            response = client.post(
-                f"{ollama_url}/api/chat",
-                json={
-                    "model": chat_model,
-                    "messages": [
-                        {"role": "system", "content": QUERY_REWRITER_SYSTEM_PROMPT},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    "stream": False,
-                    "options": {
-                        "temperature": REWRITE_TEMPERATURE,
-                        "num_predict": REWRITE_MAX_TOKENS,
-                    }
-                }
-            )
-            response.raise_for_status()
-            data = response.json()
-            
-            # Extract response content
-            message = data.get("message", {})
-            content = message.get("content", "")
-            
-            if not content:
-                logger.warning("Query rewriter: Empty response from LLM")
-                return None
-            
-            # Parse the response
-            result = parse_rewriter_response(content)
-            
-            if result:
-                # Log success (truncate query for safe logging)
-                truncated_query = result.rewritten_query[:100]
-                if len(result.rewritten_query) > 100:
-                    truncated_query += "..."
-                logger.info(f"Query rewritten: '{truncated_query}'")
-            
-            return result
-            
-    except httpx.TimeoutException:
-        logger.warning("Query rewriter: LLM request timed out")
-        return None
-    except httpx.HTTPStatusError as e:
-        logger.warning(f"Query rewriter: HTTP error {e.response.status_code}")
-        return None
-    except httpx.RequestError as e:
-        logger.warning(f"Query rewriter: Connection error: {e}")
+        client = get_llm_client()
+        logger.debug(f"Query rewriter: Calling LLM (model={client.model_name})")
+        
+        messages = [
+            LLMMessage(role="system", content=QUERY_REWRITER_SYSTEM_PROMPT),
+            LLMMessage(role="user", content=user_prompt),
+        ]
+        
+        response = client.chat(
+            messages,
+            temperature=REWRITE_TEMPERATURE,
+            max_tokens=REWRITE_MAX_TOKENS,
+        )
+        
+        content = response.content
+        if not content:
+            logger.warning("Query rewriter: Empty response from LLM")
+            return None
+        
+        # Parse the response
+        result = parse_rewriter_response(content)
+        
+        if result:
+            # Log success (truncate query for safe logging)
+            truncated_query = result.rewritten_query[:100]
+            if len(result.rewritten_query) > 100:
+                truncated_query += "..."
+            logger.info(f"Query rewritten: '{truncated_query}'")
+        
+        return result
+        
+    except LLMError as e:
+        logger.warning(f"Query rewriter: LLM error: {e}")
         return None
     except Exception as e:
         logger.warning(f"Query rewriter: Unexpected error: {e}")

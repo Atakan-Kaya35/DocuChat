@@ -1,0 +1,267 @@
+# =============================================================================
+# DocuChat - Docker Compose for External LLM API Mode
+# =============================================================================
+# This configuration uses external LLM APIs (Gemini, OpenAI) for chat/reasoning
+# while keeping Ollama for embeddings only (nomic-embed-text).
+#
+# Benefits:
+# - No GPU required for LLM inference
+# - Faster model startup (no large model downloads)
+# - Access to more capable models
+# - Reduced memory footprint
+#
+# Usage:
+#   docker compose -f docker-compose-api.yml up -d
+#
+# Required: Copy backend/.env.api.sample to backend/.env and configure API keys
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # NGINX - Reverse Proxy (only exposed service)
+  # ---------------------------------------------------------------------------
+  nginx:
+    image: nginx:alpine
+    container_name: docuchat-nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      frontend:
+        condition: service_started
+      backend:
+        condition: service_healthy
+    networks:
+      - docuchat_net
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # FRONTEND - React/Vite Application
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: docuchat-frontend
+    env_file:
+      - ./frontend/.env.sample
+    networks:
+      - docuchat_net
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # BACKEND - Django API Server
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: docuchat-backend
+    env_file:
+      - ./backend/.env.api.sample
+    volumes:
+      - backend_uploads:/data/uploads
+      - backend_extracted:/data/extracted
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+      ollama-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/readyz', timeout=5)"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    networks:
+      - docuchat_net
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # WORKER - Background Indexing Worker (uses same image as backend)
+  # ---------------------------------------------------------------------------
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: docuchat-worker
+    command: ["python", "manage.py", "run_worker"]
+    env_file:
+      - ./backend/.env.api.sample
+    volumes:
+      - backend_uploads:/data/uploads
+      - backend_extracted:/data/extracted
+    depends_on:
+      backend:
+        condition: service_healthy
+      ollama-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "sh", "-c", "test -f /tmp/worker_heartbeat && find /tmp/worker_heartbeat -mmin -1 | grep -q ."]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - docuchat_net
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # POSTGRES - Database with pgvector extension
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: docuchat-postgres
+    env_file:
+      - ./infra/.env.sample
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - docuchat_net
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # REDIS - Message Broker & Cache
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: docuchat-redis
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - docuchat_net
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # KEYCLOAK - Identity & Access Management
+  # ---------------------------------------------------------------------------
+  keycloak:
+    image: quay.io/keycloak/keycloak:25.0
+    container_name: docuchat-keycloak
+    command: ["start-dev", "--import-realm"]
+    env_file:
+      - ./infra/.env.sample
+    environment:
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-change_me}
+    volumes:
+      - ./infra/keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 2 bash -c '</dev/tcp/127.0.0.1/8080' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 60s
+    networks:
+      - docuchat_net
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # OLLAMA - Embeddings Only (no GPU required, smaller footprint)
+  # ---------------------------------------------------------------------------
+  # In API mode, Ollama is used ONLY for embeddings (nomic-embed-text).
+  # LLM inference is handled by external APIs (Gemini/OpenAI).
+  # This significantly reduces memory and GPU requirements.
+  # ---------------------------------------------------------------------------
+  ollama:
+    image: ollama/ollama:latest
+    container_name: docuchat-ollama
+    volumes:
+      - ./infra/ollama/models:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 600s
+      retries: 5
+      start_period: 10s
+    networks:
+      - docuchat_net
+    restart: unless-stopped
+    # Note: No GPU reservation needed for embeddings-only mode
+    # Uncomment below if you want faster embedding generation:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  # ---------------------------------------------------------------------------
+  # OLLAMA-INIT - Embedding Model Only (faster startup)
+  # ---------------------------------------------------------------------------
+  # Only pulls the embedding model, skips large LLM models.
+  # This makes startup much faster and uses less disk space.
+  # ---------------------------------------------------------------------------
+  ollama-init:
+    image: curlimages/curl:latest
+    container_name: docuchat-ollama-init
+    entrypoint: ["/bin/sh", "/scripts/warmup-embeddings-only.sh"]
+    volumes:
+      - ./infra/ollama/warmup-embeddings-only.sh:/scripts/warmup-embeddings-only.sh:ro
+    environment:
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_EMBED_MODEL: nomic-embed-text
+    depends_on:
+      ollama:
+        condition: service_healthy
+    networks:
+      - docuchat_net
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
+  # CURL - Temporary HTTP client (for testing internal connectivity)
+  # ---------------------------------------------------------------------------
+  curl:
+    image: curlimages/curl:latest
+    container_name: docuchat-curl
+    profiles:
+      - tools
+    networks:
+      - docuchat_net
+    entrypoint: ["curl"]
+
+# =============================================================================
+# NETWORKS
+# =============================================================================
+networks:
+  docuchat_net:
+    driver: bridge
+    name: docuchat_net
+
+# =============================================================================
+# VOLUMES
+# =============================================================================
+volumes:
+  postgres_data:
+    name: docuchat_postgres_data
+
+  redis_data:
+    name: docuchat_redis_data
+
+  backend_uploads:
+    name: docuchat_backend_uploads
+
+  backend_extracted:
+    name: docuchat_backend_extracted
