@@ -59,6 +59,10 @@ MAX_QUESTION_LENGTH = 1000
 MAX_CONTEXT_CITATIONS = 5  # Rolling window for opened citations
 MAX_CITATION_TEXT_FOR_LLM = 2000  # Chars per citation in prompt
 
+# Token limits based on query complexity
+DEFAULT_MAX_TOKENS = 1000  # Increased from 800
+COMPLEX_QUERY_MAX_TOKENS = 4000  # Increased from 1500 - needed for multi-section runbooks
+
 
 class TraceType(str, Enum):
     PLAN = "plan"
@@ -589,7 +593,15 @@ CRITICAL RULES:
    - You searched multiple queries AND
    - None of the search results were relevant AND
    - Opening citations confirmed no useful information
-7. NEVER invent tools, commands, or procedures not in the documents"""
+7. NEVER invent tools, commands, or procedures not in the documents
+
+FOR COMPLEX/MULTI-SECTION QUESTIONS:
+- Provide COMPLETE answers with ALL requested sections
+- Do NOT truncate or abbreviate your response
+- Include ALL details found in the opened citations
+- If the question asks for multiple sections (e.g., Reindex, Delete, Rate Limits), address EACH one fully
+- Quote exact text when required (SQL statements, URLs, etc.)
+- Your answer can be long - include everything needed"""
 
 
 def build_iteration_prompt(
@@ -644,21 +656,24 @@ def build_iteration_prompt(
     return "\n".join(prompt_parts)
 
 
-SYNTHESIS_PROMPT = """Based on the gathered information, answer the question.
+SYNTHESIS_PROMPT = """Based on the gathered information, answer the question COMPLETELY.
 
 STRICT RULES:
 1. Use ONLY the provided context - never make up information
 2. Cite sources using [1], [2] notation matching the citation numbers below
 3. If the context doesn't answer the question, say: "I don't know based on the provided documents."
 4. If some information is missing, explicitly state "Insufficient documentation" for those parts
-5. Be factual and concise
+5. Be thorough and include ALL relevant details from the sources
+6. If the question asks for multiple sections or topics, address EACH one completely
+7. Quote exact text when the question asks for specific statements (SQL, URLs, commands)
+8. Do NOT truncate or abbreviate - provide the FULL answer
 
 Question: {question}
 
 Available sources:
 {context}
 
-Answer (use [1], [2] etc. to cite sources):"""
+Provide a COMPLETE answer (use [1], [2] etc. to cite sources):"""
 
 
 # ============================================================================
@@ -801,7 +816,7 @@ def execute_tool(
 # LLM Integration
 # ============================================================================
 
-def call_llm(prompt: str, max_tokens: int = 600) -> str:
+def call_llm(prompt: str, max_tokens: int = 800) -> str:
     """Call LLM and return response text."""
     from apps.rag.llm_client import get_llm_client, LLMMessage, LLMError
     
@@ -948,6 +963,10 @@ def run_agent_v2(question: str, user_id: str, rerank: bool = False) -> AgentResu
     # ========================================================================
     constraints = analyze_constraints(question)
     
+    # Determine max tokens based on query complexity
+    max_tokens = COMPLEX_QUERY_MAX_TOKENS if constraints.is_complex_query else DEFAULT_MAX_TOKENS
+    logger.info(f"Query complexity: complex={constraints.is_complex_query}, max_tokens={max_tokens}")
+    
     # ========================================================================
     # Step 2: Generate plan
     # ========================================================================
@@ -995,7 +1014,7 @@ def run_agent_v2(question: str, user_id: str, rerank: bool = False) -> AgentResu
         
         # Get LLM response
         try:
-            response = call_llm(prompt, max_tokens=600)
+            response = call_llm(prompt, max_tokens=max_tokens)
         except Exception as e:
             logger.error(f"LLM call failed: {e}")
             trace.append(TraceEntry(
@@ -1165,7 +1184,7 @@ def run_agent_v2(question: str, user_id: str, rerank: bool = False) -> AgentResu
             )
             
             try:
-                synthesis_response = call_llm(synthesis_prompt, max_tokens=600)
+                synthesis_response = call_llm(synthesis_prompt, max_tokens=max_tokens)
                 cleaned_answer = synthesis_response.strip()
                 
                 # Ground citations from synthesis
@@ -1264,6 +1283,10 @@ def run_agent_v2_streaming(question: str, user_id: str, rerank: bool = False) ->
     # Analyze constraints
     constraints = analyze_constraints(question)
     
+    # Determine max tokens based on query complexity
+    max_tokens = COMPLEX_QUERY_MAX_TOKENS if constraints.is_complex_query else DEFAULT_MAX_TOKENS
+    logger.info(f"Agent v2 streaming: complex={constraints.is_complex_query}, max_tokens={max_tokens}")
+    
     # Generate plan
     plan = generate_plan(question)
     
@@ -1313,7 +1336,7 @@ def run_agent_v2_streaming(question: str, user_id: str, rerank: bool = False) ->
         reprompt_message = None
         
         try:
-            response = call_llm(prompt, max_tokens=600)
+            response = call_llm(prompt, max_tokens=max_tokens)
         except Exception as e:
             error_entry = TraceEntry(
                 type=TraceType.ERROR,
@@ -1456,7 +1479,7 @@ def run_agent_v2_streaming(question: str, user_id: str, rerank: bool = False) ->
             try:
                 synthesis_response = call_llm(
                     SYNTHESIS_PROMPT.format(question=question, context="\n\n".join(context_parts)),
-                    max_tokens=600
+                    max_tokens=max_tokens
                 )
                 cleaned_answer = synthesis_response.strip()
                 grounded_citations = (

@@ -44,6 +44,10 @@ class PromptConstraints:
     required_sections: List[str] = field(default_factory=list)
     requires_insufficiency_disclosure: bool = False
     
+    # Answer complexity estimate
+    estimated_min_answer_length: int = 50  # Minimum expected characters in answer
+    is_complex_query: bool = False  # Multi-section or detailed requirement
+    
     def to_dict(self) -> dict:
         return {
             'min_searches': self.min_searches,
@@ -55,15 +59,21 @@ class PromptConstraints:
             'conflict_resolution_rule': self.conflict_resolution_rule,
             'required_sections': self.required_sections,
             'requires_insufficiency_disclosure': self.requires_insufficiency_disclosure,
+            'estimated_min_answer_length': self.estimated_min_answer_length,
+            'is_complex_query': self.is_complex_query,
         }
 
 
 # Patterns for detecting search requirements
 SEPARATE_SEARCH_PATTERNS = [
+    # Patterns with explicit numbers first (higher priority)
+    r'\(at\s+least\s+(\d+)\s+tool\s+call',  # "(at least 3 tool calls)"
+    r'at\s+least\s+(\d+)\s+(?:tool\s+)?(?:call|search)',
+    r'(\d+)\s+(?:tool\s+)?(?:calls?|searches)',  # "3 tool calls"
+    # Patterns without explicit numbers (default to 2)
     r'separate\s+(?:tool\s+)?search(?:es)?',
     r'search\s+(?:for\s+)?(?:each|separately|individually)',
     r'multiple\s+search(?:es)?',
-    r'at\s+least\s+(\d+)\s+(?:tool\s+)?(?:call|search)',
 ]
 
 # Patterns for detecting required topics (quoted or emphasized)
@@ -78,10 +88,17 @@ TOPIC_EXTRACTION_PATTERNS = [
 OPEN_CITATION_PATTERNS = [
     r'open\s+(?:the\s+)?(?:top\s+)?(\d+)\s+citation',
     r'open_citation.*?at\s+least\s+(\d+)',
+    r'at\s+least\s+(\w+)\s+citations?',  # "at least two citations"
     r'must\s+(?:call\s+)?open_citation',
     r'retrieve\s+(?:full\s+)?text',
     r'read\s+(?:the\s+)?(?:full|detailed|complete)\s+(?:text|content|chunk)',
 ]
+
+# Word to number mapping
+WORD_TO_NUM = {
+    'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
+    'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10
+}
 
 # Patterns for exact quote requirements
 EXACT_QUOTE_PATTERNS = [
@@ -219,9 +236,12 @@ def analyze_constraints(prompt: str) -> PromptConstraints:
         if match:
             if match.lastindex and match.group(1):
                 try:
+                    # Try numeric first
                     constraints.min_open_citations = max(1, int(match.group(1)))
                 except ValueError:
-                    constraints.min_open_citations = 1
+                    # Try word-to-number
+                    word = match.group(1).lower()
+                    constraints.min_open_citations = WORD_TO_NUM.get(word, 1)
             else:
                 constraints.min_open_citations = 1
             break
@@ -273,6 +293,39 @@ def analyze_constraints(prompt: str) -> PromptConstraints:
         if re.search(pattern, text, re.IGNORECASE):
             constraints.requires_insufficiency_disclosure = True
             break
+    
+    # ========================================================================
+    # 7. Estimate answer complexity
+    # ========================================================================
+    
+    # Base minimum length
+    min_length = 100
+    
+    # Add for required sections (each section needs some content)
+    if constraints.required_sections:
+        min_length += len(constraints.required_sections) * 150
+        constraints.is_complex_query = True
+    
+    # Add for exact quotes required
+    if constraints.requires_exact_quote:
+        min_length += 100 * len(constraints.exact_quote_indicators) if constraints.exact_quote_indicators else 100
+    
+    # Add for conflict resolution
+    if constraints.requires_conflict_resolution:
+        min_length += 100
+    
+    # Add for multiple searches expected
+    if constraints.min_searches > 2:
+        min_length += 100
+        constraints.is_complex_query = True
+    
+    # Check for runbook/guide/comprehensive keywords
+    complex_keywords = ['runbook', 'guide', 'comprehensive', 'authoritative', 'detailed', 'step-by-step', 'checklist']
+    if any(kw in text for kw in complex_keywords):
+        min_length += 200
+        constraints.is_complex_query = True
+    
+    constraints.estimated_min_answer_length = min(min_length, 2000)  # Cap at 2000
     
     # Log detected constraints
     logger.info(

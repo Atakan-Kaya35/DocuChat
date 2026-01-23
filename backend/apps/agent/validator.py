@@ -350,6 +350,78 @@ def validate_no_empty_answer(
                 break
 
 
+def validate_answer_completeness(
+    answer: str,
+    constraints: 'PromptConstraints',
+    result: ValidationResult
+):
+    """
+    Check that answer is complete and not truncated.
+    
+    Detects:
+    - Answers that end mid-sentence
+    - Answers that are too short for complex queries
+    - Missing required sections
+    """
+    answer_stripped = answer.strip()
+    
+    # Check for truncation indicators (answer ending mid-word or with incomplete markers)
+    truncation_indicators = [
+        # Ends with incomplete markdown
+        (r'##\s*$', "Answer ends with empty heading"),
+        (r'\*\*[^*]*$', "Answer ends with unclosed bold text"),
+        (r'`[^`]*$', "Answer ends with unclosed code"),
+        # Ends mid-sentence (common patterns)
+        (r':\s*$', "Answer ends with colon - content appears truncated"),
+        (r',\s*$', "Answer ends with comma - content appears truncated"),
+        (r'\(\s*$', "Answer ends with open parenthesis"),
+        (r'\[\s*$', "Answer ends with open bracket"),
+        # Ends with section header only
+        (r'#+\s+\w+[:\s]*$', "Answer ends with section header but no content"),
+        # Ends with "Use when:" or similar incomplete phrases
+        (r'(?:when|if|for|to|with|by|using):\s*$', "Answer ends with incomplete phrase"),
+    ]
+    
+    for pattern, message in truncation_indicators:
+        if re.search(pattern, answer_stripped, re.IGNORECASE):
+            result.add_error(
+                "TRUNCATED_ANSWER",
+                f"{message}. Complete the answer with actual content."
+            )
+            return
+    
+    # Check minimum length for complex queries
+    if constraints.is_complex_query:
+        if len(answer_stripped) < constraints.estimated_min_answer_length:
+            result.add_error(
+                "ANSWER_TOO_SHORT",
+                f"Answer is too short ({len(answer_stripped)} chars) for this complex query. "
+                f"Expected at least {constraints.estimated_min_answer_length} chars. "
+                f"Include more detail and cover all required topics."
+            )
+            return
+    
+    # Check for required sections
+    if constraints.required_sections:
+        answer_lower = answer_stripped.lower()
+        missing_sections = []
+        for section in constraints.required_sections:
+            section_lower = section.lower().strip()
+            # Check if section header or keyword appears
+            if section_lower not in answer_lower:
+                # Also check for partial matches
+                section_words = section_lower.split()
+                if not any(word in answer_lower for word in section_words if len(word) > 3):
+                    missing_sections.append(section)
+        
+        if missing_sections:
+            result.add_error(
+                "MISSING_SECTIONS",
+                f"Missing required sections: {', '.join(missing_sections[:3])}. "
+                f"Add content for each required section."
+            )
+
+
 def validate_insufficiency_disclosure(
     answer: str,
     constraints: 'PromptConstraints',
@@ -408,6 +480,7 @@ def validate_agent_state(
     
     # Run all validators
     validate_no_empty_answer(answer, snapshot, result)
+    validate_answer_completeness(answer, constraints, result)
     validate_min_searches(snapshot, constraints, result)
     validate_min_open_citations(snapshot, constraints, result)
     validate_citation_references(answer, citation_refs, snapshot, result)
